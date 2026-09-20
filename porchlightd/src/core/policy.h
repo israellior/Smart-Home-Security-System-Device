@@ -24,9 +24,12 @@ struct Policy {
   std::chrono::seconds ring_led{5};
 
   std::chrono::seconds alert_max_age{900};
-  std::chrono::seconds alert_backoff_initial{2};
-  std::chrono::seconds alert_backoff_max{60};
   std::size_t max_queued_alerts{32};
+
+  // Shared by the alert queue and the clip uploader: both are waiting on the
+  // same server, so they retry on the same schedule.
+  std::chrono::seconds retry_backoff_initial{2};
+  std::chrono::seconds retry_backoff_max{60};
 };
 
 }  // namespace porch

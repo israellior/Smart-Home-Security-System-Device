@@ -31,6 +31,12 @@ if(NOT nlohmann_json_FOUND)
   FetchContent_MakeAvailable(nlohmann_json)
 endif()
 
+# Pure: no I/O, no dependencies, and what the tests exercise on their own.
+add_library(porchlight_core STATIC
+  src/core/alert_queue.cpp
+  src/core/core.cpp)
+target_include_directories(porchlight_core PUBLIC src)
+
 add_library(porchlight_runtime STATIC
   src/config.cpp
   src/logging.cpp
@@ -40,3 +46,8 @@ target_link_libraries(porchlight_runtime PUBLIC nlohmann_json::nlohmann_json)
 
 add_executable(porchlightd src/main.cpp)
 target_link_libraries(porchlightd PRIVATE porchlight_runtime)
+
+include(CTest)
+if(BUILD_TESTING)
+  add_subdirectory(tests)
+endif()

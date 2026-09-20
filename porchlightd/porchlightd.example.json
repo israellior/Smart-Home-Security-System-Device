@@ -18,9 +18,9 @@
     "press_dedup_window_seconds": 5,
     "ring_led_seconds": 5,
     "alert_max_age_seconds": 900,
-    "alert_backoff_initial_seconds": 2,
-    "alert_backoff_max_seconds": 60,
-    "max_queued_alerts": 32
+    "max_queued_alerts": 32,
+    "retry_backoff_initial_seconds": 2,
+    "retry_backoff_max_seconds": 60
   },
 
   "spool": {

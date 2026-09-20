@@ -145,16 +145,16 @@ void validate(const Config& cfg) {
   const Policy& p = cfg.policy;
   require_positive("timings.clip_seconds", p.clip);
   require_positive("timings.alert_max_age_seconds", p.alert_max_age);
-  require_positive("timings.alert_backoff_initial_seconds", p.alert_backoff_initial);
+  require_positive("timings.retry_backoff_initial_seconds", p.retry_backoff_initial);
   require_positive("timings.max_queued_alerts", static_cast<long long>(p.max_queued_alerts));
 
   if (p.min_clip > p.clip) {
     throw ConfigError("timings.min_clip_seconds: expected no more than timings.clip_seconds");
   }
-  if (p.alert_backoff_max < p.alert_backoff_initial) {
+  if (p.retry_backoff_max < p.retry_backoff_initial) {
     throw ConfigError(
-        "timings.alert_backoff_max_seconds: expected at least "
-        "timings.alert_backoff_initial_seconds");
+        "timings.retry_backoff_max_seconds: expected at least "
+        "timings.retry_backoff_initial_seconds");
   }
 
   require_positive("recorder.width", cfg.recorder.width);
@@ -207,10 +207,10 @@ Config load_config(const std::filesystem::path& path) {
   p.press_dedup_window = timings.seconds_or("press_dedup_window_seconds", p.press_dedup_window);
   p.ring_led = timings.seconds_or("ring_led_seconds", p.ring_led);
   p.alert_max_age = timings.seconds_or("alert_max_age_seconds", p.alert_max_age);
-  p.alert_backoff_initial =
-      timings.seconds_or("alert_backoff_initial_seconds", p.alert_backoff_initial);
-  p.alert_backoff_max = timings.seconds_or("alert_backoff_max_seconds", p.alert_backoff_max);
   p.max_queued_alerts = timings.count_or("max_queued_alerts", p.max_queued_alerts);
+  p.retry_backoff_initial =
+      timings.seconds_or("retry_backoff_initial_seconds", p.retry_backoff_initial);
+  p.retry_backoff_max = timings.seconds_or("retry_backoff_max_seconds", p.retry_backoff_max);
 
   const Section spool = root.section("spool");
   cfg.spool.path = spool.string_or("path", cfg.spool.path.string());
