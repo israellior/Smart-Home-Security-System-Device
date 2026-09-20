@@ -1,0 +1,32 @@
+[Unit]
+Description=Porchlight doorbell daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/porchlightd /etc/porchlight/porchlightd.json
+Restart=on-failure
+RestartSec=2
+
+# Shutdown drains rather than stopping dead: the recorder child gets SIGINT so
+# its MP4 finishes with EOS, SIGKILL at +5s, and the daemon is out by about
+# +10s. This has to stay above that.
+TimeoutStopSec=15
+KillSignal=SIGTERM
+
+User=porchlight
+# The sound card, the camera and the GPIO lines.
+SupplementaryGroups=audio video gpio
+
+# Creates and owns /var/lib/porchlight, which holds the clip spool.
+StateDirectory=porchlight
+
+StandardOutput=journal
+StandardError=journal
+
+# The stdin input backend is for development only; systemd gives a service no
+# terminal. Set backends.input to a real one before enabling this unit.
+StandardInput=null
+
+[Install]
+WantedBy=multi-user.target
