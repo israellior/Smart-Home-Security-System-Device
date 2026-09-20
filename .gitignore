@@ -1,0 +1,9 @@
+node_modules/
+npm-debug.log*
+
+build/
+compile_commands.json
+.cache/
+
+# Clips waiting to be uploaded. Local to whichever machine recorded them.
+spool/

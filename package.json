@@ -1,0 +1,14 @@
+{
+  "name": "pi-audio-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Throwaway PoC: relay live raw PCM audio from a Raspberry Pi to browsers over WebSocket",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "ws": "^8.21.3"
+  }
+}
