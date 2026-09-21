@@ -27,7 +27,18 @@ The recorder is confirmed on the Pi against real GStreamer 1.26.2:
 `gst-discoverer-1.0` reads back a seekable 14.72 s clip, H.264 constrained
 baseline at 640×480/30 under a 2048 kbit/s ceiling, and mono AAC at 48 kHz.
 WSL2 has no GStreamer at all, so that check can only ever happen on the Pi.
-The microphone path is still untested — that run used `audiotestsrc`.
+The WM8960 microphone is confirmed too, and cost two fixes worth remembering.
+
+Each branch feeding the muxer needs a `queue`. Without one the audio chain
+runs in `alsasrc`'s own thread — resample, AAC encode and the push into
+`mp4mux` all happen before it can read the card again — and a quarter of the
+samples were dropped. And the recorder deliberately uses a **200 ms** ALSA
+buffer, not the 40 ms `webrtc-video.py` uses: a call trades buffer for
+latency, a recording has no latency requirement at all.
+
+That broken clip still passed every check the daemon makes — exit 0, plausible
+size, valid moov atom, right duration. Only GStreamer's own warnings on stderr
+gave it away, which is why the child's output is not redirected.
 
 | 4 | Recorder: gst-launch as a child, real playable MP4 | **done** |
 | 5 | Spool, server link and uploader | next |
