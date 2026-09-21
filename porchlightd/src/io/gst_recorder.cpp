@@ -42,6 +42,9 @@ void add_video(std::vector<std::string>& args, const RecorderConfig& config) {
   args.push_back(std::format("video/x-raw,width={},height={},framerate={}/1", config.width,
                              config.height, config.fps));
   args.push_back("!");
+  // Gives the source a thread of its own, so encoding never stalls capture.
+  args.push_back("queue");
+  args.push_back("!");
   args.push_back("videoconvert");
   args.push_back("!");
 
@@ -68,6 +71,10 @@ void add_video(std::vector<std::string>& args, const RecorderConfig& config) {
   args.push_back("!");
   args.push_back("h264parse");
   args.push_back("!");
+  // And another before the muxer, so a muxer waiting on the other branch does
+  // not reach back and block this one.
+  args.push_back("queue");
+  args.push_back("!");
   args.push_back("mux.");
 }
 
@@ -76,14 +83,20 @@ void add_audio(std::vector<std::string>& args, const RecorderConfig& config) {
     args.push_back("alsasrc");
     // The device name contains an '=', so the parser needs it quoted.
     args.push_back(std::format("device=\"{}\"", config.audio_device));
-    // alsasrc defaults to a 200 ms buffer. CLAUDE.md records this Pi
-    // complaining it "can't record audio fast enough" - raise these if it does.
-    args.push_back("buffer-time=40000");
-    args.push_back("latency-time=10000");
+    // Deliberately not the 40 ms that webrtc-video.py uses. A call trades
+    // buffer for latency; a recording has no latency requirement at all, and
+    // 40 ms of slack cost this Pi a quarter of its samples.
+    args.push_back("buffer-time=200000");
+    args.push_back("latency-time=20000");
   } else {
     args.push_back("audiotestsrc");
     args.push_back("is-live=true");
   }
+  args.push_back("!");
+  // The important one. Without it the capture thread also does the resampling,
+  // the AAC encode and the push into the muxer, and the sound card overruns
+  // while it is busy elsewhere.
+  args.push_back("queue");
   args.push_back("!");
   args.push_back("audioconvert");
   args.push_back("!");
@@ -95,6 +108,8 @@ void add_audio(std::vector<std::string>& args, const RecorderConfig& config) {
   args.push_back(config.aac_element);
   args.push_back("!");
   args.push_back("aacparse");
+  args.push_back("!");
+  args.push_back("queue");
   args.push_back("!");
   args.push_back("mux.");
 }
