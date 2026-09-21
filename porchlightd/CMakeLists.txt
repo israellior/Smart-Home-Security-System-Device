@@ -14,6 +14,18 @@ option(PORCHLIGHT_SANITIZE "Build with the address and undefined-behaviour sanit
 
 add_compile_options(-Wall -Wextra -Wpedantic -Wshadow)
 
+# -Wmaybe-uninitialized is speculative, and std::variant at -O2 defeats it: the
+# optimizer inlines every alternative's move constructor into the call site and
+# then reports the branches it cannot prove unreachable. Moving an Event that
+# holds Tick draws a warning about ViewerRequested's std::string.
+#
+# 22 of them in Release, none in Debug, from identical code, and not one points
+# at a file of ours - every report is inside libstdc++. -Wuninitialized, which
+# fires only on a definite read, stays on.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options(-Wno-maybe-uninitialized)
+endif()
+
 if(PORCHLIGHT_SANITIZE)
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
   add_link_options(-fsanitize=address,undefined)
