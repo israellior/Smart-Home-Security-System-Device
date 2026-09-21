@@ -24,6 +24,7 @@ struct Backends {
   std::string server{"log"};
   std::string uploader{"log"};
   std::string media{"stub"};
+  std::string recorder{"fake"};
 };
 
 struct SpoolConfig {

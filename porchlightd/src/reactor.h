@@ -5,6 +5,7 @@
 #include <optional>
 
 #include "core/clock.h"
+#include "timer_fd.h"
 #include "unique_fd.h"
 
 namespace porch {
@@ -38,7 +39,7 @@ class Reactor {
   void drain(int fd);
 
   UniqueFd epoll_;
-  UniqueFd timer_;
+  TimerFd timer_;
   UniqueFd signals_;
   std::map<int, Callback> handlers_;
   Callback on_wake_;

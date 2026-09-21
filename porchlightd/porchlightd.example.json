@@ -8,7 +8,8 @@
     "chime": "console",
     "server": "log",
     "uploader": "log",
-    "media": "stub"
+    "media": "stub",
+    "recorder": "fake"
   },
 
   "timings": {

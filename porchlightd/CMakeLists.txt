@@ -38,11 +38,17 @@ add_library(porchlight_core STATIC
 target_include_directories(porchlight_core PUBLIC src)
 
 add_library(porchlight_runtime STATIC
+  src/backends.cpp
   src/config.cpp
+  src/daemon.cpp
+  src/io/fake_recorder.cpp
+  src/io/stdin_input.cpp
   src/logging.cpp
-  src/reactor.cpp)
+  src/random_ids.cpp
+  src/reactor.cpp
+  src/timer_fd.cpp)
 target_include_directories(porchlight_runtime PUBLIC src)
-target_link_libraries(porchlight_runtime PUBLIC nlohmann_json::nlohmann_json)
+target_link_libraries(porchlight_runtime PUBLIC porchlight_core nlohmann_json::nlohmann_json)
 
 add_executable(porchlightd src/main.cpp)
 target_link_libraries(porchlightd PRIVATE porchlight_runtime)

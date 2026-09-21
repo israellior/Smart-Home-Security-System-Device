@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "config.h"
+#include "daemon.h"
 #include "logging.h"
 #include "reactor.h"
 
@@ -47,12 +48,9 @@ int main(int argc, char** argv) {
                config_path.string());
 
     porch::Reactor reactor;
-    reactor.on_signal([&reactor] {
-      porch::log(porch::Level::Info, "main", "signal received, shutting down");
-      reactor.stop();
-    });
+    porch::Daemon daemon(config, reactor);
+    daemon.run();
 
-    reactor.run();
     porch::log(porch::Level::Info, "main", "stopped");
     return 0;
   } catch (const porch::ConfigError& error) {

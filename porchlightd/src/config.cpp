@@ -198,6 +198,7 @@ Config load_config(const std::filesystem::path& path) {
   cfg.backends.server = backends.string_or("server", cfg.backends.server);
   cfg.backends.uploader = backends.string_or("uploader", cfg.backends.uploader);
   cfg.backends.media = backends.string_or("media", cfg.backends.media);
+  cfg.backends.recorder = backends.string_or("recorder", cfg.backends.recorder);
 
   const Section timings = root.section("timings");
   Policy& p = cfg.policy;

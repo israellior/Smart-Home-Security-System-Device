@@ -3,7 +3,6 @@
 #include <signal.h>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
-#include <sys/timerfd.h>
 
 #include <cerrno>
 #include <cstdint>
@@ -28,12 +27,8 @@ Reactor::Reactor() {
     throw_errno("epoll_create1");
   }
 
-  timer_.reset(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC));
-  if (!timer_.valid()) {
-    throw_errno("timerfd_create");
-  }
-  watch(timer_.get(), [this] {
-    drain(timer_.get());
+  watch(timer_.fd(), [this] {
+    timer_.drain();
     if (on_wake_) {
       on_wake_();
     }
@@ -81,22 +76,10 @@ void Reactor::unwatch(int fd) {
 }
 
 void Reactor::wake_at(std::optional<TimePoint> deadline) {
-  // CLOCK_MONOTONIC shares its epoch with steady_clock on Linux, which is what
-  // makes an absolute deadline translate directly.
-  itimerspec spec{};
   if (deadline) {
-    const auto since_epoch =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(deadline->time_since_epoch()).count();
-    spec.it_value.tv_sec = static_cast<std::time_t>(since_epoch / 1'000'000'000);
-    spec.it_value.tv_nsec = static_cast<long>(since_epoch % 1'000'000'000);
-    // An all-zero it_value disarms the timer rather than firing it, so a
-    // deadline at exactly the epoch has to be nudged.
-    if (spec.it_value.tv_sec == 0 && spec.it_value.tv_nsec == 0) {
-      spec.it_value.tv_nsec = 1;
-    }
-  }
-  if (::timerfd_settime(timer_.get(), TFD_TIMER_ABSTIME, &spec, nullptr) != 0) {
-    throw_errno("timerfd_settime");
+    timer_.arm_at(*deadline);
+  } else {
+    timer_.disarm();
   }
 }
 
