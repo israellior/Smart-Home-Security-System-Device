@@ -54,6 +54,7 @@ add_library(porchlight_runtime STATIC
   src/config.cpp
   src/daemon.cpp
   src/io/fake_recorder.cpp
+  src/io/gst_recorder.cpp
   src/io/stdin_input.cpp
   src/logging.cpp
   src/random_ids.cpp

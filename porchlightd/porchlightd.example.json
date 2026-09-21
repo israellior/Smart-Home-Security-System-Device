@@ -9,7 +9,7 @@
     "server": "log",
     "uploader": "log",
     "media": "stub",
-    "recorder": "fake"
+    "recorder": "gstreamer"
   },
 
   "timings": {

@@ -23,8 +23,8 @@ Release, 0 warnings and 48/48 each. Build Release before believing a clean
 build — `-Wmaybe-uninitialized` does nothing at `-O0`, and that hid 22 reports
 for a while.
 
-| 4 | Recorder and spool: real GStreamer, real MP4 | next |
-| 5 | Server link and uploader | |
+| 4 | Recorder: gst-launch as a child, real playable MP4 | **done** |
+| 5 | Spool, server link and uploader | next |
 | — | LED, button, PIR, camera | waiting on parts |
 
 Out of scope for now: libgpiod, the kernel driver, the real server protocol,
@@ -73,6 +73,14 @@ a laptop with no camera, no button and no server:
 
 The last two have no real equivalent — they exist because the alert queue, the
 ageing and the backoff are otherwise unreachable without unplugging something.
+
+`porchlightd.example.json` uses the real recorder (`"recorder": "gstreamer"`)
+and needs GStreamer; `porchlightd.demo.json` uses the fake one and runs
+anywhere. To see the command the recorder will run without running it:
+
+```bash
+./build/porchlightd --print-pipeline ./porchlightd.example.json
+```
 
 Worth trying: type `motion`, then `button` two seconds later, and watch one
 event get upgraded to a ring — same id, second alert, no second clip.

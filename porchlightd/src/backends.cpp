@@ -5,6 +5,7 @@
 #include "io/console_chime.h"
 #include "io/console_led.h"
 #include "io/fake_recorder.h"
+#include "io/gst_recorder.h"
 #include "io/logging_server_link.h"
 #include "io/logging_uploader.h"
 #include "io/stdin_input.h"
@@ -54,6 +55,9 @@ std::unique_ptr<Recorder> make_recorder(const Config& config, Reactor& reactor,
                                         const EventSink& sink) {
   if (config.backends.recorder == "fake") {
     return std::make_unique<FakeRecorder>(reactor, sink, config.spool.path);
+  }
+  if (config.backends.recorder == "gstreamer") {
+    return std::make_unique<GstRecorder>(reactor, sink, config.recorder, config.spool.path);
   }
   unknown("recorder", config.backends.recorder);
 }
