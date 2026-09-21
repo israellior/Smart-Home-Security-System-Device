@@ -17,6 +17,12 @@ Each step adds exactly one thing that can break.
 | 1 | Schema doc, skeleton: CMake, loop, logging, config, signals | **done** |
 | 2 | The core and its unit tests | **done — 48 passing** |
 | 3 | Fake backends, so the whole flow runs from the keyboard | **done** |
+
+Verified on both machines: WSL2 GCC 13.3 and the Pi's GCC 14.2, Debug and
+Release, 0 warnings and 48/48 each. Build Release before believing a clean
+build — `-Wmaybe-uninitialized` does nothing at `-O0`, and that hid 22 reports
+for a while.
+
 | 4 | Recorder and spool: real GStreamer, real MP4 | next |
 | 5 | Server link and uploader | |
 | — | LED, button, PIR, camera | waiting on parts |
@@ -132,9 +138,22 @@ Single-threaded throughout, so there is not a mutex in the codebase.
 or fire a retry early. The one wall-clock value in the system is an alert's
 timestamp, derived at send time.
 
-## Open
+## What step 4 will encode with
 
-- No git remote yet.
-- The AAC encoder element is unverified on both the Pi and WSL2. Step 4 needs
-  `gst-inspect-1.0 avenc_aac` (and `voaacenc`, `faac`, `fdkaacenc`) run on the
-  Pi before its pipeline can be written against anything but a guess.
+Probed on the Pi, GStreamer 1.26.2, all present:
+
+| Element | From | Rank | For |
+|---|---|---|---|
+| `avenc_aac` | gst-libav | none (0) | the audio encoder we use |
+| `voaacenc` | gst-plugins-bad | secondary (128) | fallback; takes S16LE only |
+| `mp4mux` | gst-plugins-good | primary (256) | the muxer |
+
+`avenc_aac` takes a wider input range (`channels: [1,16]`) and encodes speech
+better at low bitrates, so it stays the default in the config.
+
+Its **rank is none**, which means autoplugging will never choose it on its own.
+That is harmless while the pipeline names every element explicitly, and a trap
+the day anything here reaches for `encodebin` or `decodebin`.
+
+WSL2's GStreamer is still unprobed, so the real recorder may turn out to be
+testable only on the Pi.
