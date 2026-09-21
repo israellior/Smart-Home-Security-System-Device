@@ -32,16 +32,20 @@ TEST(Call, WaitsForTheRecorderToFinishBeforeItStarts) {
   EXPECT_EQ(find<StartCall>(finished)->peer, "viewer-1");
 }
 
-TEST(Call, PartialClipIsStillUploaded) {
+TEST(Call, PartialClipIsKeptAndUploadedOnceTheCallEnds) {
   Harness h;
   h.go_online();
   h.send(MotionDetected{});
   h.after(3s, ViewerRequested{"viewer-1"});
 
-  const auto out = h.after(1s, good_clip("evt-1", 4s));
+  // The clip is worth keeping, but the upstream link belongs to the viewer.
+  const auto finished = h.after(1s, good_clip("evt-1", 4s));
+  EXPECT_EQ(count<StartCall>(finished), 1);
+  EXPECT_EQ(count<UploadClip>(finished), 0);
 
-  ASSERT_NE(find<UploadClip>(out), nullptr);
-  EXPECT_EQ(find<UploadClip>(out)->event_id, "evt-1");
+  const auto left = h.send(CallEnded{"viewer-1", "closed the tab"});
+  ASSERT_NE(find<UploadClip>(left), nullptr);
+  EXPECT_EQ(find<UploadClip>(left)->event_id, "evt-1");
 }
 
 TEST(Call, ASecondViewerJoinsTheSameCall) {

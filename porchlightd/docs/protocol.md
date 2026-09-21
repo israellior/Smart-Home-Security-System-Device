@@ -85,32 +85,100 @@ here. The reply travels on the media script's own signaling socket, not this one
 
 ## Clip upload
 
+Three steps. Any failure restarts from the first — the device never resumes a
+sequence from the middle.
+
+### 1 — ask for somewhere to put it
+
 ```
-PUT /clips/<eventId>
+POST /api/clips/<eventId>/upload-url
 Authorization: Bearer <device credential>
+```
+
+```json
+{
+  "url": "https://<bucket>/<opaque path>?<signature>",
+  "method": "PUT",
+  "headers": { "Content-Type": "video/mp4" },
+  "expiresAt": "2026-09-20T17:20:31.412Z"
+}
+```
+
+**A fresh URL is requested on every attempt.** The device never stores one and
+never reuses one — signed URLs expire, so a retry an hour later needs its own.
+
+### 2 — send the bytes, and only the bytes
+
+```
+PUT <url>
 Content-Type: video/mp4
 ```
 
-Metadata rides in the request rather than in a second call, so an upload is
-self-describing and does not depend on its alert having arrived first:
+Exactly the headers step 1 handed back, and nothing else. The signature covers
+the headers, so an extra `X-Porchlight-*` here does not add metadata — it makes
+the upload fail. That is why the metadata lives in step 3.
+
+No device credential travels here either: the URL carries its own
+authorisation, and may point somewhere that has never heard of this device.
+
+### 3 — confirm
 
 ```
-X-Porchlight-Device: porch-1
-X-Porchlight-Kind: ring
-X-Porchlight-At: 2026-09-20T17:05:31.412Z
-X-Porchlight-Duration-Ms: 15000
-X-Porchlight-Partial: true
+POST /api/clips/<eventId>/confirm
+Authorization: Bearer <device credential>
+Content-Type: application/json
+```
+
+```json
+{
+  "deviceId": "porch-1",
+  "kind": "ring",
+  "at": "2026-09-20T17:05:31.412Z",
+  "durationMs": 15000,
+  "partial": true,
+  "bytes": 2310584
+}
 ```
 
 `partial` is set when a viewer arrived and cut the recording short. The clip is
 playable either way — the recorder always finishes with EOS — but it is not the
 length that was asked for, and a UI should say so.
 
-These same five fields are written to `<eventId>.json` beside the MP4 in the
-spool, which is what lets a restart re-queue a clip it has never seen before.
-The sidecar is the source of truth; the headers are derived from it.
+**The confirm is what makes a clip real.** A bucket PUT that succeeds and is
+never confirmed is a clip the server does not know exists — treat it as absent
+and sweep it on a timer, because the device is probably about to send the same
+bytes again under a new URL.
 
-A `2xx` deletes both files. Anything else leaves them for the next attempt.
+Steps 1 and 3 are both idempotent per `eventId`. Re-confirming is exactly how a
+device that died between the PUT and the confirm recovers.
+
+Because the body carries everything about the event, an upload still does not
+depend on its alert having arrived first.
+
+## What the device keeps, and until when
+
+That confirm body is exactly the `<eventId>.json` sidecar written beside the
+MP4 in the spool. The sidecar is the source of truth; the request is a copy of
+it. It is also what lets a restart re-queue a clip it has never seen before.
+
+**The MP4 and its sidecar are deleted on a `2xx` from step 3 — never from step
+2.** Anything else, at any step, keeps both, and the next attempt starts again
+at step 1. `UploadFinished{ok}` inside the daemon means *the confirm
+succeeded*, not that the bytes were sent.
+
+The cost of that rule is re-uploading a file whose PUT already worked. The
+alternative is deleting a clip the server never recorded, which is
+unrecoverable, so the trade is not close.
+
+## Uploads wait for a live call to end
+
+The device does not **begin** an upload while someone is watching. A home
+connection has one upstream link, and the live stream is what a person is
+waiting on — spending it on a clip from ten minutes ago would degrade the call
+they opened to look at.
+
+An upload already in flight when a call starts is left to finish; there is no
+way to unsend it, and one clip's remainder is a bounded cost.
 
 ## When the server is unreachable
 

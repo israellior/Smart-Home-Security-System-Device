@@ -83,6 +83,55 @@ TEST(Recording, AFailedUploadIsRetriedAfterTheBackoff) {
   EXPECT_EQ(count<UploadClip>(retried), 1);
 }
 
+TEST(Recording, ARetryWaitsForAViewerToLeave) {
+  Harness h;
+  h.go_online();
+  h.send(MotionDetected{});
+  h.after(10s, good_clip("evt-1"));
+  h.send(UploadFinished{"evt-1", false});  // the confirm failed; a retry is due
+
+  h.send(ViewerRequested{"viewer-1"});
+  const auto during = h.after(5s);  // long past the backoff
+  EXPECT_EQ(count<UploadClip>(during), 0);
+
+  const auto left = h.send(CallEnded{"viewer-1", "closed the tab"});
+  ASSERT_NE(find<UploadClip>(left), nullptr);
+  EXPECT_EQ(find<UploadClip>(left)->event_id, "evt-1");
+}
+
+TEST(Recording, AnUploadAlreadyInFlightIsNotCancelledByACall) {
+  Harness h;
+  h.go_online();
+  h.send(MotionDetected{});
+  const auto started = h.after(10s, good_clip("evt-1"));
+  ASSERT_EQ(count<UploadClip>(started), 1);
+
+  // There is no way to unsend it, so a viewer arriving does not try.
+  const auto viewer = h.send(ViewerRequested{"viewer-1"});
+  EXPECT_EQ(count<StopRecording>(viewer), 0);
+
+  // And its result is still accepted while the call is live.
+  h.send(UploadFinished{"evt-1", true});
+  const auto later = h.after(30s);
+  EXPECT_EQ(count<UploadClip>(later), 0);
+}
+
+TEST(Recording, AFailedConfirmKeepsTheClipForAnotherAttempt) {
+  Harness h;
+  h.go_online();
+  h.send(MotionDetected{});
+  h.after(10s, good_clip("evt-1"));
+
+  // ok=false means the confirm failed, whether or not the bytes were sent.
+  // The whole sequence starts again, so the same clip comes back.
+  h.send(UploadFinished{"evt-1", false});
+  const auto retried = h.after(2s);
+
+  ASSERT_NE(find<UploadClip>(retried), nullptr);
+  EXPECT_EQ(find<UploadClip>(retried)->event_id, "evt-1");
+  EXPECT_EQ(find<UploadClip>(retried)->path, "/spool/clip.mp4");
+}
+
 TEST(Recording, ASucceededUploadIsNotRetried) {
   Harness h;
   h.go_online();

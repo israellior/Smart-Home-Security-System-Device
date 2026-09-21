@@ -236,6 +236,12 @@ void Core::pump_uploads(TimePoint now, std::vector<Action>& out) {
   if (shutting_down_ || upload_in_flight_ || uploads_.empty() || !server_online_) {
     return;
   }
+  // One upstream link, and the person watching is waiting on it. A clip from
+  // ten minutes ago can have it back when they are done. An upload already in
+  // flight is left to finish, since there is no way to unsend it.
+  if (!viewers_.empty()) {
+    return;
+  }
   if (upload_retry_after_ && now < *upload_retry_after_) {
     return;
   }
