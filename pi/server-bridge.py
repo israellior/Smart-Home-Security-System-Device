@@ -16,18 +16,20 @@ hello, and relays JSON lines both ways.
                         {"type":"event-ack","eventId":...,"kind":...,"ok":...}
                         {"type":"viewer-requested","peer":7}
 
-Run it by hand to test against a server with no daemon involved:
+There is no enrolment. The credential is written onto the SD card when the
+device is built; this only ever reads it.
 
-    ./server-bridge.py --pair PAIR-7K2M9P4Q --url http://host:4000 \
-        --device-id porch-1 --credential-file ./cred
-    ./server-bridge.py --url http://host:4000 --device-id porch-1 \
-        --credential-file ./cred
+By hand, against a live server and with no daemon involved:
+
+    ./server-bridge.py --url http://host:4000 --device-id porch-1 \\
+        --credential-file /etc/porchlight/credential --check
+    ./server-bridge.py --url http://host:4000 --device-id porch-1 \\
+        --credential-file /etc/porchlight/credential
     {"type":"event","eventId":"test-1","kind":"ring","at":"2026-09-21T10:00:00.000Z"}
 """
 
 import argparse
 import json
-import os
 import random
 import sys
 import threading
@@ -37,19 +39,19 @@ import urllib.request
 
 try:
     import websocket  # python3-websocket
-except ImportError:  # --pair is pure stdlib and must work without it
+except ImportError:  # --check is pure stdlib and must work without it
     websocket = None
 
+# Three roles share this socket and replacement is scoped per role, so the
+# daemon claiming "pi" would close the media script's socket on every
+# reconnect - which looks like video randomly failing, not like an auth bug.
 HELLO_ROLE = "device"
 
 # Reconnect delays. A doorbell that has been offline for an hour should come
-# back promptly, but a thousand of them must not return in the same second.
+# back promptly, but a street of them must not return in the same second.
 RECONNECT_INITIAL = 1.0
 RECONNECT_MAX = 60.0
 
-# Close codes the server defines. 4001 and 4002 both mean stop trying, for
-# opposite reasons: one says another copy of us took over, the other says the
-# credential will never be accepted.
 CLOSE_REPLACED = 4001
 CLOSE_BAD_CREDENTIAL = 4002
 CLOSE_NO_HELLO = 4003
@@ -75,50 +77,39 @@ def signal_url(base_url):
     raise SystemExit(f"--url must start with http:// or https://, got {base_url!r}")
 
 
-def pair(base_url, device_id, code, credential_file):
-    """Redeem a pairing code. The credential comes back exactly once."""
-    body = json.dumps({"pairingCode": code, "deviceId": device_id}).encode()
-    request = urllib.request.Request(
-        base_url.rstrip("/") + "/api/provision",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            answer = json.loads(response.read())
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode(errors="replace")
-        raise SystemExit(f"pairing failed: HTTP {error.code} {detail}")
-    except urllib.error.URLError as error:
-        raise SystemExit(f"pairing failed: {error.reason}")
-
-    credential = answer.get("credential")
-    if not credential:
-        raise SystemExit(f"pairing returned no credential: {answer}")
-
-    # Written before anything else happens. There is no endpoint to read it
-    # back, so losing it here means pairing again.
-    directory = os.path.dirname(os.path.abspath(credential_file))
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    handle = os.open(credential_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(handle, "w") as out:
-        out.write(credential + "\n")
-
-    note(f"paired as {answer.get('deviceId')}, credential saved to {credential_file}")
-    note(f"name: {answer.get('name')}  paired at: {answer.get('pairedAt')}")
-
-
 def read_credential(path):
     try:
         with open(path) as handle:
             credential = handle.read().strip()
     except OSError as error:
-        raise SystemExit(f"cannot read credential {path}: {error}. Run --pair first.")
+        raise SystemExit(
+            f"cannot read credential {path}: {error}\n"
+            "It is written onto the card when the device is built. There is no\n"
+            "enrolment call - if it is missing, the device must be re-minted.")
     if not credential:
-        raise SystemExit(f"{path} is empty. Run --pair first.")
+        raise SystemExit(f"{path} is empty; the device must be re-minted.")
     return credential
+
+
+def check(base_url, device_id, credential):
+    """Does this credential work? Answers without touching the socket."""
+    request = urllib.request.Request(
+        base_url.rstrip("/") + f"/api/devices/{device_id}/self",
+        headers={"Authorization": f"Bearer {credential}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            answer = json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        raise SystemExit(
+            f"credential rejected: HTTP {error.code} "
+            f"{error.read().decode(errors='replace')}")
+    except urllib.error.URLError as error:
+        raise SystemExit(f"cannot reach {base_url}: {error.reason}")
+
+    device = answer.get("device", answer)
+    note(f"credential works. deviceId={device.get('deviceId')} "
+         f"name={device.get('name')} location={device.get('location')}")
 
 
 class Bridge:
@@ -130,6 +121,10 @@ class Bridge:
         self.ready = False
         self.stop = False
         self.delay = RECONNECT_INITIAL
+        # stdin is read on its own thread, so two threads can reach the socket.
+        # websocket-client does not serialise writes, and interleaved frames
+        # would corrupt the stream rather than merely reorder it.
+        self.sending = threading.Lock()
 
     def run(self):
         threading.Thread(target=self.read_stdin, daemon=True).start()
@@ -152,19 +147,21 @@ class Bridge:
             on_close=self.on_close,
             on_error=lambda _socket, error: note(f"socket error: {error}"),
         )
-        # websocket-client answers the server's protocol pings by itself; this
-        # interval is our own liveness check on top of that.
+        # run_forever owns this thread and does nothing else, which is what
+        # keeps the automatic pong answering the server's 30s pings. Anything
+        # that blocks in here shows up as a flaky network.
         self.socket.run_forever(ping_interval=20, ping_timeout=10)
 
     def on_open(self, socket):
         # The server closes anything that has not said hello within ten
         # seconds, so this is the first thing that happens.
-        socket.send(json.dumps({
-            "type": "hello",
-            "role": HELLO_ROLE,
-            "deviceId": self.device_id,
-            "token": self.credential,
-        }))
+        with self.sending:
+            socket.send(json.dumps({
+                "type": "hello",
+                "role": HELLO_ROLE,
+                "deviceId": self.device_id,
+                "token": self.credential,
+            }))
 
     def on_message(self, _socket, raw):
         try:
@@ -177,7 +174,7 @@ class Bridge:
         if kind == "hello-ok":
             self.ready = True
             self.delay = RECONNECT_INITIAL  # a good connection resets the backoff
-            note(f"connected as {HELLO_ROLE}/{self.device_id}")
+            note(f"connected as role={HELLO_ROLE} deviceId={self.device_id}")
             emit({"type": "online"})
         elif kind == "hello-error":
             note(f"hello refused: {message.get('error')}")
@@ -196,7 +193,8 @@ class Bridge:
         self.ready = False
 
         if code == CLOSE_BAD_CREDENTIAL:
-            note("credential rejected; this cannot be retried. Pair again.")
+            note("credential rejected. This is permanent - the device must be "
+                 "re-minted and re-flashed. Not reconnecting.")
             emit({"type": "fatal", "reason": "credential-rejected"})
             self.stop = True
         elif code == CLOSE_REPLACED:
@@ -214,7 +212,8 @@ class Bridge:
         if not self.ready:
             return False
         try:
-            self.socket.send(json.dumps(message))
+            with self.sending:
+                self.socket.send(json.dumps(message))
             return True
         except Exception as error:  # the socket can die between check and send
             note(f"send failed: {error}")
@@ -233,13 +232,13 @@ class Bridge:
                 continue
 
             if message.get("type") == "event":
-                # deviceId is ours to add; the daemon should not have to
-                # repeat it on every alert.
+                # The socket is authoritative about who we are, but sending it
+                # keeps the logs readable on both ends.
                 message["deviceId"] = self.device_id
                 if not self.send(message):
-                    # No ack will ever arrive for this one. The daemon's core
-                    # treats silence as retryable, which is what we want.
-                    note(f"dropped event {message.get('eventId')}: link is down")
+                    # No ack will ever arrive for this one, and the core treats
+                    # silence as retryable. That is exactly right.
+                    note(f"not sent, link is down: {message.get('eventId')}")
             else:
                 note(f"ignoring command {message.get('type')}")
 
@@ -254,18 +253,20 @@ def main():
     parser.add_argument("--url", required=True, help="e.g. http://192.168.0.219:4000")
     parser.add_argument("--device-id", required=True)
     parser.add_argument("--credential-file", required=True)
-    parser.add_argument("--pair", metavar="CODE", help="redeem a pairing code and exit")
+    parser.add_argument("--check", action="store_true",
+                        help="verify the credential over HTTP and exit")
     options = parser.parse_args()
 
-    if options.pair:
-        pair(options.url, options.device_id, options.pair, options.credential_file)
+    credential = read_credential(options.credential_file)
+
+    if options.check:
+        check(options.url, options.device_id, credential)
         return
 
     if websocket is None:
         raise SystemExit(
             "python3-websocket is not installed: sudo apt install -y python3-websocket")
 
-    credential = read_credential(options.credential_file)
     Bridge(signal_url(options.url), options.device_id, credential).run()
 
 

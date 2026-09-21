@@ -15,17 +15,54 @@ Two channels, because they have different failure modes:
 An alert must arrive in under a second and is small. A clip is megabytes and can
 wait. Putting them on one channel would let an upload delay a doorbell.
 
-## A trap in the current server
+## The role split, and why it is a trap
 
-`server.js` treats a second `hello` with `role: 'pi'` as a replacement and closes
-the first socket ([server.js:81-90](../../server.js#L81-L90)). `webrtc-video.py`
-already signs in that way. If `porchlightd` also said `role: 'pi'` it would kick
-the media script off its socket every time it reconnected.
+Three roles share `/signal`. They present the **same credential** and differ
+only by that one string.
 
-Anything that is not `'pi'` is currently filed as `'browser'`, so the daemon
-cannot sign in correctly at all until the server learns a third role. The
-proposal is `role: 'device'`: one per `deviceId`, replaces its own predecessor,
-and is never a signaling target for an offer.
+| role | who | what it does |
+|---|---|---|
+| `device` | `porchlightd` | sends alerts, receives viewer requests |
+| `pi` | `webrtc-video.py` | carries the call |
+| `browser` | a viewer | watches |
+
+Replacement is scoped **per role**, so a reconnecting daemon displaces only the
+previous daemon. Give the daemon `'pi'` and every reconnect silently closes the
+media script's socket — which presents as video that randomly stops working
+rather than as an authentication error, and so gets debugged in entirely the
+wrong place.
+
+Worse: **only `device` may send events**, and from any other role they are
+*silently ignored*. Silence is also how the server signals a transient
+failure, so a misconfigured role means retrying forever and never succeeding.
+
+`webrtc-video.py` already sends `'pi'`
+([line 544](../../pi/webrtc-video.py#L544)); the daemon sends `'device'`.
+
+## The credential
+
+Written onto the card when the device is built. There is no enrolment call and
+no way to read it back, so a lost credential means the device is re-minted and
+re-flashed. The daemon only ever reads it — as `Authorization: Bearer` on HTTP,
+and as `token` in `hello`.
+
+The device is never told who owns it and does not need to know. It reports; the
+server decides who hears about it.
+
+## Close codes
+
+| code | meaning | what the device does |
+|---|---|---|
+| 4001 | replaced by another connection of your role | stop; looping would fight a duplicate |
+| 4002 | credential rejected | **permanent** — stop, log loudly, re-mint |
+| 4003 | no hello within 10 s | our bug; reconnect |
+| 1013 | transient server failure | reconnect with backoff |
+| other | — | reconnect with backoff and jitter |
+
+The server pings at the protocol level every 30 s and drops anything that
+missed the previous one. The library answers those automatically **from inside
+its read loop**, so nothing else may block that loop — if it does, the symptom
+is a flaky network rather than a stuck reader.
 
 ## Alerts
 
