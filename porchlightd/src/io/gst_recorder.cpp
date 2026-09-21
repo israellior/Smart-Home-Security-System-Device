@@ -173,10 +173,30 @@ void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds) {
   }
   argv.push_back(nullptr);
 
+  // The child must start with a clean signal disposition. posix_spawn hands it
+  // our mask by default, and the reactor blocks SIGINT and SIGTERM so signalfd
+  // can be the only reader - so without this, the SIGINT we send gst-launch
+  // stays pending forever, no EOS happens, and every clip is killed at zero
+  // bytes.
+  posix_spawnattr_t attr;
+  if (::posix_spawnattr_init(&attr) != 0) {
+    log(Level::Error, "rec", "posix_spawnattr_init failed: {}", std::strerror(errno));
+    report(false);
+    return;
+  }
+  sigset_t unblocked;
+  ::sigemptyset(&unblocked);
+  sigset_t everything;
+  ::sigfillset(&everything);
+  ::posix_spawnattr_setsigmask(&attr, &unblocked);
+  ::posix_spawnattr_setsigdefault(&attr, &everything);
+  ::posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+
   // Spawned directly, never through a shell: a shell would receive the SIGINT
   // meant for gst-launch and the clip would never get its EOS.
   pid_t pid = -1;
-  const int failure = ::posix_spawnp(&pid, argv[0], nullptr, nullptr, argv.data(), environ);
+  const int failure = ::posix_spawnp(&pid, argv[0], nullptr, &attr, argv.data(), environ);
+  ::posix_spawnattr_destroy(&attr);
   if (failure != 0) {
     log(Level::Error, "rec", "cannot run gst-launch-1.0: {}", std::strerror(failure));
     report(false);
