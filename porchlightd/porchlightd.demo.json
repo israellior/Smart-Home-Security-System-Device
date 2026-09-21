@@ -1,0 +1,51 @@
+{
+  "device_id": "porch-demo",
+  "log_level": "info",
+
+  "backends": {
+    "input": "stdin",
+    "led": "console",
+    "chime": "console",
+    "server": "log",
+    "uploader": "log",
+    "media": "stub",
+    "recorder": "fake"
+  },
+
+  "timings": {
+    "clip_seconds": 5,
+    "min_clip_seconds": 1,
+    "motion_cooldown_seconds": 10,
+    "press_dedup_window_seconds": 3,
+    "ring_led_seconds": 2,
+    "alert_max_age_seconds": 120,
+    "max_queued_alerts": 3,
+    "retry_backoff_initial_seconds": 2,
+    "retry_backoff_max_seconds": 8
+  },
+
+  "spool": {
+    "path": "/var/lib/porchlight/spool",
+    "max_bytes": 536870912
+  },
+
+  "recorder": {
+    "video_source": "test",
+    "audio_source": "test",
+    "audio_device": "hw:CARD=wm8960soundcard",
+    "encoder": "x264",
+    "aac_element": "avenc_aac",
+    "width": 640,
+    "height": 480,
+    "fps": 30,
+    "video_bitrate_kbps": 2000
+  },
+
+  "gpio": {
+    "chip": "/dev/gpiochip0",
+    "button_line": 17,
+    "motion_line": 27,
+    "led_line": 22,
+    "debounce_ms": 30
+  }
+}
