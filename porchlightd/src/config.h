@@ -27,6 +27,13 @@ struct Backends {
   std::string recorder{"fake"};
 };
 
+struct ChimeConfig {
+  // plughw rather than hw, so ALSA converts whatever the file happens to be
+  // into what the card accepts instead of refusing it at the wrong rate.
+  std::string device{"plughw:CARD=wm8960soundcard"};
+  std::filesystem::path sound{"/usr/local/share/porchlight/chime.wav"};
+};
+
 struct SpoolConfig {
   std::filesystem::path path{"/var/lib/porchlight/spool"};
   std::uintmax_t max_bytes{512ull * 1024 * 1024};
@@ -59,6 +66,7 @@ struct Config {
   Level log_level{Level::Info};
   Backends backends;
   Policy policy;
+  ChimeConfig chime;
   SpoolConfig spool;
   RecorderConfig recorder;
   GpioConfig gpio;

@@ -12,5 +12,8 @@ compile_commands.json
 # Produced by git archive when shipping a copy to the Pi.
 *.tar.gz
 
+# Generated on the Pi; the README has the command. Not shipped.
+*.wav
+
 # Clips waiting to be uploaded. Local to whichever machine recorded them.
 spool/

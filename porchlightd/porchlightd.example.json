@@ -5,7 +5,7 @@
   "backends": {
     "input": "stdin",
     "led": "console",
-    "chime": "console",
+    "chime": "alsa",
     "server": "log",
     "uploader": "log",
     "media": "stub",
@@ -22,6 +22,11 @@
     "max_queued_alerts": 32,
     "retry_backoff_initial_seconds": 2,
     "retry_backoff_max_seconds": 60
+  },
+
+  "chime": {
+    "device": "plughw:CARD=wm8960soundcard",
+    "sound": "/usr/local/share/porchlight/chime.wav"
   },
 
   "spool": {

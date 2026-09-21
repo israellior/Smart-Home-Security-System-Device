@@ -1,19 +1,17 @@
 #include "io/gst_recorder.h"
 
 #include <signal.h>
-#include <spawn.h>
-#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstring>
 #include <format>
 #include <system_error>
 #include <utility>
 
+#include "child_process.h"
 #include "logging.h"
-
-extern char** environ;
 
 namespace porch {
 namespace {
@@ -25,10 +23,6 @@ constexpr std::chrono::seconds kEosGrace{5};
 // An MP4 with a header and nothing else is still bigger than this, so anything
 // smaller did not survive its muxer.
 constexpr std::uintmax_t kMinPlausibleBytes = 1024;
-
-int open_pidfd(pid_t pid) {
-  return static_cast<int>(::syscall(SYS_pidfd_open, pid, 0u));
-}
 
 void add_video(std::vector<std::string>& args, const RecorderConfig& config) {
   if (config.video_source == "libcamera") {
@@ -180,46 +174,15 @@ void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds) {
   started_at_ = Clock::now();
   killed_ = false;
 
-  const std::vector<std::string> args = build_pipeline(config_, output_);
-  std::vector<char*> argv;
-  argv.reserve(args.size() + 1);
-  for (const std::string& arg : args) {
-    argv.push_back(const_cast<char*>(arg.c_str()));
-  }
-  argv.push_back(nullptr);
-
-  // The child must start with a clean signal disposition. posix_spawn hands it
-  // our mask by default, and the reactor blocks SIGINT and SIGTERM so signalfd
-  // can be the only reader - so without this, the SIGINT we send gst-launch
-  // stays pending forever, no EOS happens, and every clip is killed at zero
-  // bytes.
-  posix_spawnattr_t attr;
-  if (::posix_spawnattr_init(&attr) != 0) {
-    log(Level::Error, "rec", "posix_spawnattr_init failed: {}", std::strerror(errno));
-    report(false);
-    return;
-  }
-  sigset_t unblocked;
-  ::sigemptyset(&unblocked);
-  sigset_t everything;
-  ::sigfillset(&everything);
-  ::posix_spawnattr_setsigmask(&attr, &unblocked);
-  ::posix_spawnattr_setsigdefault(&attr, &everything);
-  ::posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
-
-  // Spawned directly, never through a shell: a shell would receive the SIGINT
-  // meant for gst-launch and the clip would never get its EOS.
-  pid_t pid = -1;
-  const int failure = ::posix_spawnp(&pid, argv[0], nullptr, &attr, argv.data(), environ);
-  ::posix_spawnattr_destroy(&attr);
-  if (failure != 0) {
-    log(Level::Error, "rec", "cannot run gst-launch-1.0: {}", std::strerror(failure));
+  const pid_t pid = spawn_child(build_pipeline(config_, output_));
+  if (pid < 0) {
+    log(Level::Error, "rec", "cannot run gst-launch-1.0: {}", std::strerror(errno));
     report(false);
     return;
   }
 
   pid_ = pid;
-  pidfd_.reset(open_pidfd(pid_));
+  pidfd_ = watch_child(pid_);
   if (!pidfd_.valid()) {
     log(Level::Error, "rec", "pidfd_open failed: {}", std::strerror(errno));
     ::kill(pid_, SIGKILL);
