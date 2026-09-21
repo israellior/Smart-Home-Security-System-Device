@@ -102,6 +102,40 @@ anywhere. To see the command the recorder will run without running it:
 Worth trying: type `motion`, then `button` two seconds later, and watch one
 event get upgraded to a ring — same id, second alert, no second clip.
 
+## The chime
+
+`backends.chime` picks one of three: `console` logs `ding`, `busy` always
+refuses (standing in for a card held by a live call), and `alsa` plays a file
+through the speaker with `aplay`.
+
+It is best effort by design. A missing file, a missing `aplay` and a busy
+device are each one warning and nothing more — the alert goes out over a
+different path, so a silent doorbell still notifies.
+
+There is no sound file in the repo. To make a two-tone one on the Pi:
+
+```bash
+gst-launch-1.0 -e concat name=c ! audioconvert ! wavenc \
+  ! filesink location=chime.wav \
+  audiotestsrc wave=sine freq=784 num-buffers=18 \
+    ! audio/x-raw,rate=48000,channels=1,format=S16LE ! c. \
+  audiotestsrc wave=sine freq=622 num-buffers=32 \
+    ! audio/x-raw,rate=48000,channels=1,format=S16LE ! c.
+```
+
+```bash
+sudo mkdir -p /usr/local/share/porchlight
+sudo mv chime.wav /usr/local/share/porchlight/
+```
+
+Any WAV will do — `chime.sound` in the config points wherever you like, and
+the device defaults to `plughw:` rather than `hw:` so ALSA converts a file at
+the wrong rate instead of refusing it.
+
+Two things follow from one sound card. The chime **cannot** play while a call
+holds the speaker, and because a button press starts a recording at the same
+moment, the chime ends up **inside** every ring clip.
+
 ## When the hardware arrives
 
 Everything sits behind an interface, and one file chooses the implementation:

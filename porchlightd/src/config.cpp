@@ -213,6 +213,10 @@ Config load_config(const std::filesystem::path& path) {
       timings.seconds_or("retry_backoff_initial_seconds", p.retry_backoff_initial);
   p.retry_backoff_max = timings.seconds_or("retry_backoff_max_seconds", p.retry_backoff_max);
 
+  const Section chime = root.section("chime");
+  cfg.chime.device = chime.string_or("device", cfg.chime.device);
+  cfg.chime.sound = chime.string_or("sound", cfg.chime.sound.string());
+
   const Section spool = root.section("spool");
   cfg.spool.path = spool.string_or("path", cfg.spool.path.string());
   cfg.spool.max_bytes = spool.bytes_or("max_bytes", cfg.spool.max_bytes);

@@ -2,6 +2,7 @@
 
 #include <format>
 
+#include "io/alsa_chime.h"
 #include "io/console_chime.h"
 #include "io/console_led.h"
 #include "io/fake_recorder.h"
@@ -27,12 +28,16 @@ std::unique_ptr<Led> make_led(const std::string& name) {
   unknown("led", name);
 }
 
-std::unique_ptr<Chime> make_chime(const std::string& name) {
+std::unique_ptr<Chime> make_chime(const Config& config, Reactor& reactor) {
+  const std::string& name = config.backends.chime;
   if (name == "console") {
     return std::make_unique<ConsoleChime>();
   }
   if (name == "busy") {
     return std::make_unique<BusyChime>();
+  }
+  if (name == "alsa") {
+    return std::make_unique<AlsaChime>(reactor, config.chime);
   }
   unknown("chime", name);
 }
@@ -67,7 +72,7 @@ std::unique_ptr<Recorder> make_recorder(const Config& config, Reactor& reactor,
 Hardware make_hardware(const Config& config, Reactor& reactor, const EventSink& sink) {
   Hardware hardware;
   hardware.led = make_led(config.backends.led);
-  hardware.chime = make_chime(config.backends.chime);
+  hardware.chime = make_chime(config, reactor);
   hardware.uploader = make_uploader(config.backends.uploader, sink);
   hardware.media = make_media(config.backends.media);
   hardware.recorder = make_recorder(config, reactor, sink);

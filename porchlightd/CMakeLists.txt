@@ -51,8 +51,10 @@ target_include_directories(porchlight_core PUBLIC src)
 
 add_library(porchlight_runtime STATIC
   src/backends.cpp
+  src/child_process.cpp
   src/config.cpp
   src/daemon.cpp
+  src/io/alsa_chime.cpp
   src/io/fake_recorder.cpp
   src/io/gst_recorder.cpp
   src/io/stdin_input.cpp
