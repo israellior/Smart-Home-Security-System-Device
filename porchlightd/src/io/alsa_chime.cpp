@@ -73,9 +73,14 @@ void AlsaChime::on_child_exit() {
   release();
 
   if (!played) {
-    // Most likely the card is held by a live call, which is expected and
-    // documented. Never fatal, and never a lost alert.
-    log(Level::Warn, "chime", "aplay did not play (status {}); the device may be busy", status);
+    // aplay has already printed the reason on the line above, so this does not
+    // guess at one. A card held by a live call and a missing file look alike
+    // from here, and neither is fatal or costs an alert.
+    if (WIFEXITED(status)) {
+      log(Level::Warn, "chime", "aplay exited {}; its own message is above", WEXITSTATUS(status));
+    } else {
+      log(Level::Warn, "chime", "aplay was killed by signal {}", WTERMSIG(status));
+    }
   }
 }
 
