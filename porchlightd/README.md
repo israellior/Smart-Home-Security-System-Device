@@ -23,6 +23,12 @@ Release, 0 warnings and 48/48 each. Build Release before believing a clean
 build — `-Wmaybe-uninitialized` does nothing at `-O0`, and that hid 22 reports
 for a while.
 
+The recorder is confirmed on the Pi against real GStreamer 1.26.2:
+`gst-discoverer-1.0` reads back a seekable 14.72 s clip, H.264 constrained
+baseline at 640×480/30 under a 2048 kbit/s ceiling, and mono AAC at 48 kHz.
+WSL2 has no GStreamer at all, so that check can only ever happen on the Pi.
+The microphone path is still untested — that run used `audiotestsrc`.
+
 | 4 | Recorder: gst-launch as a child, real playable MP4 | **done** |
 | 5 | Spool, server link and uploader | next |
 | — | LED, button, PIR, camera | waiting on parts |
