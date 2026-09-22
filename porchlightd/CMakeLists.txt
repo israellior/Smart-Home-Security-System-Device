@@ -58,6 +58,7 @@ add_library(porchlight_runtime STATIC
   src/io/bridge_server_link.cpp
   src/io/fake_recorder.cpp
   src/io/gst_recorder.cpp
+  src/io/script_uploader.cpp
   src/io/stdin_input.cpp
   src/logging.cpp
   src/random_ids.cpp

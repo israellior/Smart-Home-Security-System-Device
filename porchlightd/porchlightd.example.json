@@ -7,7 +7,7 @@
     "led": "console",
     "chime": "alsa",
     "server": "bridge",
-    "uploader": "log",
+    "uploader": "script",
     "media": "stub",
     "recorder": "gstreamer"
   },
@@ -28,6 +28,7 @@
     "base_url": "http://192.168.0.219:4000",
     "credential_path": "/etc/porchlight/credential",
     "bridge_path": "/usr/local/lib/porchlight/server-bridge.py",
+    "uploader_path": "/usr/local/lib/porchlight/upload-clip.py",
     "ack_timeout_seconds": 10
   },
 

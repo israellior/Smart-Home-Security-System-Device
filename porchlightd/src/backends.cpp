@@ -10,6 +10,7 @@
 #include "io/gst_recorder.h"
 #include "io/logging_server_link.h"
 #include "io/logging_uploader.h"
+#include "io/script_uploader.h"
 #include "io/stdin_input.h"
 #include "io/stub_media.h"
 
@@ -43,9 +44,14 @@ std::unique_ptr<Chime> make_chime(const Config& config, Reactor& reactor) {
   unknown("chime", name);
 }
 
-std::unique_ptr<ClipUploader> make_uploader(const std::string& name, const EventSink& sink) {
+std::unique_ptr<ClipUploader> make_uploader(const Config& config, Reactor& reactor,
+                                            const EventSink& sink) {
+  const std::string& name = config.backends.uploader;
   if (name == "log") {
     return std::make_unique<LoggingUploader>(sink);
+  }
+  if (name == "script") {
+    return std::make_unique<ScriptUploader>(reactor, sink, config.server, config.device_id);
   }
   unknown("uploader", name);
 }
@@ -74,7 +80,7 @@ Hardware make_hardware(const Config& config, Reactor& reactor, const EventSink& 
   Hardware hardware;
   hardware.led = make_led(config.backends.led);
   hardware.chime = make_chime(config, reactor);
-  hardware.uploader = make_uploader(config.backends.uploader, sink);
+  hardware.uploader = make_uploader(config, reactor, sink);
   hardware.media = make_media(config.backends.media);
   hardware.recorder = make_recorder(config, reactor, sink);
 

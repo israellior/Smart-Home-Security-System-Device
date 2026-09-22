@@ -33,6 +33,10 @@ struct ServerConfig {
   // call, so a missing one means the device has to be re-minted.
   std::filesystem::path credential_path{"/etc/porchlight/credential"};
   std::filesystem::path bridge_path{"/usr/local/lib/porchlight/server-bridge.py"};
+  // The other half of the same link, and deliberately a second process rather
+  // than a second mode of the first: an upload is minutes of HTTPS to a
+  // different host, and must not share a fate with the socket carrying alerts.
+  std::filesystem::path uploader_path{"/usr/local/lib/porchlight/upload-clip.py"};
   // How long silence is allowed to last before it counts as a failure. The
   // server signals transient trouble by not answering at all.
   std::chrono::seconds ack_timeout{10};

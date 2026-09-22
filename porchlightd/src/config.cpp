@@ -218,6 +218,7 @@ Config load_config(const std::filesystem::path& path) {
   cfg.server.credential_path =
       server.string_or("credential_path", cfg.server.credential_path.string());
   cfg.server.bridge_path = server.string_or("bridge_path", cfg.server.bridge_path.string());
+  cfg.server.uploader_path = server.string_or("uploader_path", cfg.server.uploader_path.string());
   cfg.server.ack_timeout = server.seconds_or("ack_timeout_seconds", cfg.server.ack_timeout);
 
   const Section chime = root.section("chime");
