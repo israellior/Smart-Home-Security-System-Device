@@ -121,6 +121,53 @@ TEST(Recording, AnEmptyFileIsDiscardedEvenWhenTheRecorderClaimsSuccess) {
   EXPECT_EQ(count<DiscardClip>(out), 1);
 }
 
+TEST(Recording, TheOldestClipGoesWhenTheSpoolIsFull) {
+  Harness h;  // offline on purpose: nothing leaves, so the clips pile up
+
+  const auto record = [&h](const char* id) {
+    h.after(25s, MotionDetected{});  // past the cooldown, so each one triggers
+    return h.after(10s, good_clip(id, 10s, std::string("/spool/") + id + ".mp4"));
+  };
+
+  record("evt-1");
+  record("evt-2");
+  record("evt-3");  // three megabytes, which is exactly the cap
+  const auto fourth = record("evt-4");
+
+  ASSERT_NE(find<DiscardClip>(fourth), nullptr);
+  EXPECT_EQ(find<DiscardClip>(fourth)->event_id, "evt-1");
+  EXPECT_EQ(find<DiscardClip>(fourth)->path, "/spool/evt-1.mp4");
+  EXPECT_EQ(count<DiscardClip>(fourth), 1);  // only as many as it takes to fit
+
+  // And what survived is still in order behind it.
+  const auto online = h.go_online();
+  ASSERT_NE(find<UploadClip>(online), nullptr);
+  EXPECT_EQ(find<UploadClip>(online)->event_id, "evt-2");
+}
+
+TEST(Recording, TheClipBeingUploadedIsNeverTheOneDropped) {
+  Harness h;
+  h.go_online();
+
+  const auto record = [&h](const char* id) {
+    h.after(25s, MotionDetected{});
+    return h.after(10s, good_clip(id, 10s, std::string("/spool/") + id + ".mp4"));
+  };
+
+  // evt-1 goes out at once and then says nothing, so it stays in flight and
+  // at the front of the queue while the others queue behind it.
+  const auto first = record("evt-1");
+  ASSERT_EQ(count<UploadClip>(first), 1);
+
+  record("evt-2");
+  record("evt-3");
+  const auto fourth = record("evt-4");
+
+  ASSERT_NE(find<DiscardClip>(fourth), nullptr);
+  EXPECT_EQ(find<DiscardClip>(fourth)->event_id, "evt-2");
+  EXPECT_EQ(count<UploadClip>(fourth), 0);  // still the one that never answered
+}
+
 TEST(Recording, AnUploadWaitsForTheServer) {
   Harness h;  // offline
   h.send(MotionDetected{});

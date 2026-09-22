@@ -25,6 +25,9 @@ Policy test_policy() {
   policy.max_queued_alerts = 3;
   policy.retry_backoff_initial = 2s;
   policy.retry_backoff_max = 8s;
+  // Three clips, since good_clip is a megabyte. Small enough that a test can
+  // fill the spool by hand instead of by arithmetic.
+  policy.spool_max_bytes = 3ull * 1024 * 1024;
   return policy;
 }
 

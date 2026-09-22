@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 
 namespace porch {
 
@@ -35,6 +36,11 @@ struct Policy {
   // same server, so they retry on the same schedule.
   std::chrono::seconds retry_backoff_initial{2};
   std::chrono::seconds retry_backoff_max{60};
+
+  // What the clips waiting to go up may take on the card. There is no
+  // equivalent of alert_max_age here: an alert costs nothing to keep and a
+  // clip costs megabytes, so the limit is size and the oldest go first.
+  std::uintmax_t spool_max_bytes{512ull * 1024 * 1024};
 };
 
 }  // namespace porch

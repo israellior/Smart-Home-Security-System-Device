@@ -161,8 +161,10 @@ void Core::on_recording_finished(const RecordingFinished& event, std::vector<Act
   const bool worth_keeping =
       event.ok && event.bytes > 0 && event.duration >= policy_.min_clip && describable;
   if (worth_keeping) {
-    uploads_.push_back(UploadClip{event.event_id, event.path, described->kind,
-                                  described->triggered_at, event.duration, described->cut_short});
+    uploads_.push_back({UploadClip{event.event_id, event.path, described->kind,
+                                   described->triggered_at, event.duration, described->cut_short},
+                        event.bytes});
+    enforce_spool_cap(out);
   } else if (!event.path.empty()) {
     out.push_back(DiscardClip{event.event_id, event.path});
   }
@@ -179,7 +181,7 @@ void Core::on_upload_finished(const UploadFinished& event, TimePoint now) {
     upload_retry_after_ = upload_backoff_.fail(now);
     return;
   }
-  if (!uploads_.empty() && uploads_.front().event_id == event.event_id) {
+  if (!uploads_.empty() && uploads_.front().clip.event_id == event.event_id) {
     uploads_.pop_front();
   }
   upload_backoff_.reset();
@@ -261,7 +263,28 @@ void Core::pump_uploads(TimePoint now, std::vector<Action>& out) {
     return;
   }
   upload_in_flight_ = true;
-  out.push_back(uploads_.front());
+  out.push_back(uploads_.front().clip);
+}
+
+void Core::enforce_spool_cap(std::vector<Action>& out) {
+  std::uintmax_t total = 0;
+  for (const PendingUpload& pending : uploads_) {
+    total += pending.bytes;
+  }
+
+  // The oldest go first: a doorbell that has been offline for a week is worth
+  // more to somebody as the last hour than as the first. Never the one already
+  // in flight, which is always the front - there is no way to unsend it, and
+  // deleting the file underneath it would cost a failed upload as well as the
+  // clip. Everything dropped here is announced, so the uploader removes the
+  // sidecar with the mp4 rather than leaving it to be found later.
+  std::size_t oldest = upload_in_flight_ ? 1 : 0;
+  while (total > policy_.spool_max_bytes && uploads_.size() > oldest) {
+    const auto victim = uploads_.begin() + static_cast<std::ptrdiff_t>(oldest);
+    total -= victim->bytes;
+    out.push_back(DiscardClip{victim->clip.event_id, victim->clip.path});
+    uploads_.erase(victim);
+  }
 }
 
 LedPattern Core::desired_led() const {

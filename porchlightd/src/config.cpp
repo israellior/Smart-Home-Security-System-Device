@@ -228,6 +228,10 @@ Config load_config(const std::filesystem::path& path) {
   const Section spool = root.section("spool");
   cfg.spool.path = spool.string_or("path", cfg.spool.path.string());
   cfg.spool.max_bytes = spool.bytes_or("max_bytes", cfg.spool.max_bytes);
+  // Under spool in the file, where anyone looking for it would go; in the
+  // policy in the code, because it is a rule the core applies. Copied here
+  // rather than above, since the section is only read now.
+  cfg.policy.spool_max_bytes = cfg.spool.max_bytes;
 
   const Section recorder = root.section("recorder");
   cfg.recorder.video_source = recorder.one_of("video_source", cfg.recorder.video_source,

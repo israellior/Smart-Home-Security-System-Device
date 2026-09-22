@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <deque>
 #include <optional>
 #include <set>
@@ -48,7 +49,12 @@ class Core {
   };
 
   // A clip on disk with everything needed to describe it, waiting its turn.
-  using PendingUpload = UploadClip;
+  // The size is kept beside it rather than inside it: the uploader measures the
+  // file itself, and the only thing that needs this is the spool cap.
+  struct PendingUpload {
+    UploadClip clip;
+    std::uintmax_t bytes = 0;
+  };
 
   void on_button(TimePoint now, std::vector<Action>& out);
   void on_motion(TimePoint now, std::vector<Action>& out);
@@ -64,6 +70,7 @@ class Core {
   void lapse(TimePoint now);
   void pump_alerts(TimePoint now, std::vector<Action>& out);
   void pump_uploads(TimePoint now, std::vector<Action>& out);
+  void enforce_spool_cap(std::vector<Action>& out);
   void update_led(std::vector<Action>& out);
   LedPattern desired_led() const;
 
