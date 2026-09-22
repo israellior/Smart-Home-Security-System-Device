@@ -15,5 +15,7 @@ compile_commands.json
 # Generated on the Pi; the README has the command. Not shipped.
 *.wav
 
+__pycache__/
+
 # Clips waiting to be uploaded. Local to whichever machine recorded them.
 spool/
