@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Working notes for this project. Read this first; update it at the end of any session
-that changes something here. Last updated 2026-09-19.
+that changes something here. Last updated 2026-09-22.
 
 **Also read [DESIGN.md](DESIGN.md).** This file describes the present. That one
 describes how the finished system is meant to work — remote access, auth tokens,
@@ -301,9 +301,10 @@ After the reboot the in-tree driver starts from **its own** mixer defaults, so t
 routing verified below will not have carried over. Run `./check-audio.sh`, apply the
 `amixer` lines it prints, then `sudo alsactl store`.
 
-**2. Still not a git repository, and it has now cost something.** The PCM intercom
-was deleted on 2026-09-19 — eight files and half of `server.js` — with no way to
-get any of it back. `git init` and a commit before the next clean-up.
+**2. ~~Still not a git repository.~~ Fixed 2026-09-20** — but it cost something
+first. The PCM intercom was deleted on 2026-09-19, eight files and half of
+`server.js`, with no way to get any of it back. Work goes on `development` and
+reaches `main` when it is confirmed working.
 
 **3. A secure context is needed from Step 3 on — but not necessarily HTTPS.**
 `getUserMedia` refuses outside one, so plain `http://192.168.0.219:3000` can receive
@@ -347,14 +348,23 @@ A negative stripchart offset means the local clock is **ahead** of true time.
 ```
 CLAUDE.md               This file: what exists, and how to work on it.
 DESIGN.md               How the finished system is meant to work. Settled decisions.
+docs/server-brief.md    What the app server has to provide, written for whoever
+                        builds it. Alerts, the three clip steps, LiveKit tokens.
+                        Where this repo and that document disagree, that one wins.
+porchlightd/            The C++20 doorbell daemon, with its own README and its own
+                        step table. Decides when to alert, record, chime and call.
 server.js               Express + ws. Static files and the signaling switchboard.
-                        161 lines, and carries no media at all.
+                        163 lines, and carries no media at all.
 public/webrtc.html      Steps 1-3: RTCPeerConnection, video + Opus both ways, a
                         level meter per direction, mute, live stats with A/V skew.
                         Warns when it is not a secure context.
 pi/webrtc-video.py      Steps 1-3: videotestsrc -> H.264 and a mic -> Opus out, the
                         browser's mic -> alsasink back, all on one webrtcbin, plus
                         signaling. The name is stale; it is the whole Pi client now.
+pi/server-bridge.py     porchlightd's WebSocket to the app server, as a child
+                        process: C++ has no WebSocket, python3-websocket is here.
+pi/upload-clip.py       One clip, in three steps - signed url, PUT, confirm. Judged
+                        by its exit code alone; only the confirm earns a 0.
 pi/check-audio.sh       Read-only hardware audit: card, driver conflicts, mixer, a real
                         recording with levels, GStreamer elements, Python bindings.
 pi/fix-wm8960.sh        Surveys Waveshare's installer and undoes it reversibly.
@@ -363,10 +373,14 @@ pi/fix-wm8960.sh        Surveys Waveshare's installer and undoes it reversibly.
 tools/signal-test.js    Fake WebRTC peer, either role. Speaks signaling, no media.
                         The way to test server.js on its own - which matters more,
                         not less, once it grows rooms and auth (see DESIGN.md).
+tools/clip-stub.js      The app server's clip endpoints and a bucket, faked - and
+                        the ways they fail, which a real server will not do on
+                        request. --fail / --fail-once / --expire-after.
 ```
 
 `server.js` serves `pi/*` scripts by name (`/check-audio.sh`, `/fix-wm8960.sh`,
-`/webrtc-video.py`) so the Pi can `curl -fO` them. Add new Pi scripts to that list.
+`/webrtc-video.py`, `/server-bridge.py`, `/upload-clip.py`) so the Pi can
+`curl -fO` them. Add new Pi scripts to that list.
 
 ## The signaling protocol
 
@@ -414,6 +428,7 @@ is what lets it hold the two tracks together.
 npm start                                  # server on :3000, or PORT=3100 npm start
 node tools/signal-test.js --role pi        # fake peers, to test signaling alone
 node tools/signal-test.js
+node tools/clip-stub.js --out ./received   # the app server's clip endpoints, faked
 ```
 
 On the Pi:

@@ -15,13 +15,14 @@ Each step adds exactly one thing that can break.
 |---|---|---|
 | 0 | git init, first commit | **done** |
 | 1 | Schema doc, skeleton: CMake, loop, logging, config, signals | **done** |
-| 2 | The core and its unit tests | **done — 48 passing** |
+| 2 | The core and its unit tests | **done — 57 passing** |
 | 3 | Fake backends, so the whole flow runs from the keyboard | **done** |
 
 Verified on both machines: WSL2 GCC 13.3 and the Pi's GCC 14.2, Debug and
-Release, 0 warnings and 48/48 each. Build Release before believing a clean
-build — `-Wmaybe-uninitialized` does nothing at `-O0`, and that hid 22 reports
-for a while.
+Release, 0 warnings — 48/48 each when the Pi last ran them, 57/57 on WSL since
+the clip work. Build Release before believing a clean build —
+`-Wmaybe-uninitialized` does nothing at `-O0`, and that hid 22 reports for a
+while.
 
 The recorder is confirmed on the Pi against real GStreamer 1.26.2:
 `gst-discoverer-1.0` reads back a seekable 14.72 s clip, H.264 constrained
@@ -42,7 +43,8 @@ gave it away, which is why the child's output is not redirected.
 
 | 4 | Recorder: gst-launch as a child, real playable MP4 | **done** |
 | 5 | Server link: alerts to the real app server | **done** |
-| 6 | Clips: sidecar, spool, real upload | next |
+| 6 | Clips: sidecar, real upload, spool cap | **done, against a stub** |
+| 7 | The same against the real `/api/clips/...` | next, and not ours alone |
 | — | LED, button, PIR, camera | waiting on parts |
 
 Out of scope for now: libgpiod, the kernel driver, the real server protocol,
@@ -128,34 +130,79 @@ retries garbage forever. `at` is the moment the sensor fired and stays
 unchanged across every retry, so an alert held through an outage still reports
 when the person was at the door.
 
+Both Python halves live in `/usr/local/lib/porchlight/` — `server-bridge.py`
+for the socket and `upload-clip.py` for the clips, named by `server.bridge_path`
+and `server.uploader_path`. `server.js` serves both by name, so the Pi fetches
+them the same way it fetches everything else:
+
+```bash
+cd /usr/local/lib/porchlight
+sudo curl -fO http://192.168.0.219:3000/server-bridge.py
+sudo curl -fO http://192.168.0.219:3000/upload-clip.py
+sudo chmod +x server-bridge.py upload-clip.py
+```
+
 Set your own settings in `/etc/porchlight/porchlightd.json` rather than editing
 the tracked example, or every `git pull` will fight you.
 
-## What clips still need
+## Clips
 
-[`pi/upload-clip.py`](../pi/upload-clip.py) already does the three steps and is
-judged purely by its exit code — 0 means the **confirm** succeeded, which is
-the only thing that permits deleting the local file. Nothing calls it yet. To
-wire it up:
+`backends.uploader = "script"` is the real one. It writes `<eventId>.json`
+beside the MP4, spawns [`pi/upload-clip.py`](../pi/upload-clip.py), and believes
+its **exit code and nothing else**: 0 means the confirm answered 2xx, and that
+is the only thing that permits deleting the local copy. Anything else leaves
+both files where they are for the next attempt, which starts again at step 1
+because signed URLs expire.
 
-1. **`UploadClip` has to carry the metadata.** The confirm body needs `kind`,
-   `at`, `durationMs` and `partial`, and only the core knows them at the moment
-   a recording finishes — including `partial`, which is true exactly when a
-   viewer cut the clip short. `ActiveEvent` needs the trigger time added. Small
-   core change, and it needs tests.
-2. **Something must write `<eventId>.json` beside the MP4** before uploading.
-   That sidecar *is* the confirm body, and it is also what would let a restart
-   re-queue a clip it has never seen.
-3. **A `ScriptUploader`** that spawns `upload-clip.py` and maps its exit code to
-   `UploadFinished{ok}`. Same pattern as the recorder and the chime.
-4. **Deletion and the spool size cap.** Nothing deletes anything today, so
-   clips accumulate on the SD card.
-5. **A startup rescan** of the spool. Deferred — it needs a way to inject a
-   found clip back into the core.
+The sidecar *is* the confirm body. Four of its fields are known only to the
+core at the moment a recording ends, which is why `UploadClip` carries them:
 
-**The `/api/clips/...` endpoints return 404 today.** The shapes are agreed and
-still free to move, so say if they are wrong for the device before the server
-commits to them.
+| field | where it comes from |
+|---|---|
+| `kind` | the event, raised to `ring` if a press upgraded it |
+| `at` | when the **sensor** fired, never when the upload happened |
+| `durationMs` | what the recorder actually produced |
+| `partial` | something stopped the recording early — a viewer, or a shutdown |
+
+`at` stays the motion's time even when a press upgrades the event: the kind is
+raised because somebody is at the door, but the clip still begins where the
+recording did.
+
+`spool.max_bytes` is now enforced, in the core rather than by sweeping the
+directory — the core is the only thing that knows which clips are still owed to
+the server, and a sweep would eventually delete the file underneath a running
+upload. Oldest first, and never the one in flight.
+
+**Verified against [`tools/clip-stub.js`](../../tools/clip-stub.js), not
+against the real server** — see below. What is left:
+
+1. **A startup rescan** of the spool. Still deferred, and it needs a way to
+   inject a found clip back into the core. Until it exists, a clip whose daemon
+   died between the recording and the upload is never sent and never deleted.
+2. **A clip whose file has gone wedges the queue.** The core retries the front
+   of the queue forever and only pops it on success, so a missing file means
+   `upload-clip.py` fails every time and nothing behind it moves. It takes an
+   outside hand deleting from the spool, so it is not urgent — but the fix is
+   an outcome the uploader can report as permanent, the way alerts already
+   distinguish a rejection from a failure.
+
+**The real `/api/clips/...` endpoints return 404 today.** The shapes are agreed
+and still free to move; [`docs/server-brief.md`](../../docs/server-brief.md) is
+what the other side is building from.
+
+### Running it against the stub
+
+The stub is the three endpoints and a bucket, and — more usefully — the ways
+they fail, which a real server will not do on request.
+
+```bash
+node tools/clip-stub.js --out ./received     # on the server host
+node tools/clip-stub.js --fail-once confirm  # the retry is the interesting case
+node tools/clip-stub.js --fail confirm       # nothing ever finishes
+```
+
+Then point `server.base_url` at it. A confirmed clip disappears from the spool
+and appears under `--out`, with its sidecar as the server received it.
 
 ## The chime
 
