@@ -19,3 +19,6 @@ __pycache__/
 
 # Clips waiting to be uploaded. Local to whichever machine recorded them.
 spool/
+
+# Where tools/clip-stub.js puts what it is sent.
+received/
