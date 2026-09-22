@@ -41,7 +41,8 @@ size, valid moov atom, right duration. Only GStreamer's own warnings on stderr
 gave it away, which is why the child's output is not redirected.
 
 | 4 | Recorder: gst-launch as a child, real playable MP4 | **done** |
-| 5 | Spool, server link and uploader | next |
+| 5 | Server link: alerts to the real app server | **done** |
+| 6 | Clips: sidecar, spool, real upload | next |
 | — | LED, button, PIR, camera | waiting on parts |
 
 Out of scope for now: libgpiod, the kernel driver, the real server protocol,
@@ -101,6 +102,60 @@ anywhere. To see the command the recorder will run without running it:
 
 Worth trying: type `motion`, then `button` two seconds later, and watch one
 event get upgraded to a ring — same id, second alert, no second clip.
+
+## Talking to the app server
+
+`backends.server = "bridge"` is the real link.
+[`pi/server-bridge.py`](../pi/server-bridge.py) holds the WebSocket and the
+daemon exchanges JSON lines with it over pipes — C++ has no WebSocket, and this
+Pi already runs `python3-websocket` for the media script, so the socket lives
+where the library is and the daemon keeps no network dependencies.
+
+**Verified on hardware against the live server**: `role: "device"` accepted,
+`motion` and `ring` both delivered from a button press with no hand-typed JSON,
+and the app shows them.
+
+Three rules the transport must honour, all exercised rather than assumed:
+
+| server says | device does |
+|---|---|
+| `ok: true` | done, never sent again |
+| `ok: false` | **permanent** — dropped, never retried, reason logged |
+| *no reply at all* | **transient** — retried with backoff, forever |
+
+Getting the last two the wrong way round either loses real doorbell presses or
+retries garbage forever. `at` is the moment the sensor fired and stays
+unchanged across every retry, so an alert held through an outage still reports
+when the person was at the door.
+
+Set your own settings in `/etc/porchlight/porchlightd.json` rather than editing
+the tracked example, or every `git pull` will fight you.
+
+## What clips still need
+
+[`pi/upload-clip.py`](../pi/upload-clip.py) already does the three steps and is
+judged purely by its exit code — 0 means the **confirm** succeeded, which is
+the only thing that permits deleting the local file. Nothing calls it yet. To
+wire it up:
+
+1. **`UploadClip` has to carry the metadata.** The confirm body needs `kind`,
+   `at`, `durationMs` and `partial`, and only the core knows them at the moment
+   a recording finishes — including `partial`, which is true exactly when a
+   viewer cut the clip short. `ActiveEvent` needs the trigger time added. Small
+   core change, and it needs tests.
+2. **Something must write `<eventId>.json` beside the MP4** before uploading.
+   That sidecar *is* the confirm body, and it is also what would let a restart
+   re-queue a clip it has never seen.
+3. **A `ScriptUploader`** that spawns `upload-clip.py` and maps its exit code to
+   `UploadFinished{ok}`. Same pattern as the recorder and the chime.
+4. **Deletion and the spool size cap.** Nothing deletes anything today, so
+   clips accumulate on the SD card.
+5. **A startup rescan** of the spool. Deferred — it needs a way to inject a
+   found clip back into the core.
+
+**The `/api/clips/...` endpoints return 404 today.** The shapes are agreed and
+still free to move, so say if they are wrong for the device before the server
+commits to them.
 
 ## The chime
 
