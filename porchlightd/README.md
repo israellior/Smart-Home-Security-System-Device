@@ -145,6 +145,63 @@ sudo chmod +x server-bridge.py upload-clip.py
 Set your own settings in `/etc/porchlight/porchlightd.json` rather than editing
 the tracked example, or every `git pull` will fight you.
 
+## Deploying to the Pi for real
+
+Four things on the device, and only the credential is secret.
+
+```bash
+sudo install -m 0755 build/porchlightd /usr/local/bin/porchlightd
+
+sudo mkdir -p /usr/local/lib/porchlight /etc/porchlight
+sudo install -m 0755 ../pi/server-bridge.py ../pi/upload-clip.py /usr/local/lib/porchlight/
+
+sudo cp porchlightd.example.json /etc/porchlight/porchlightd.json
+sudo nano /etc/porchlight/porchlightd.json      # set server.base_url
+```
+
+**The credential is typed onto the device and lives nowhere else.** It is not
+in this repository, it is not fetched over HTTP, and the server keeps only a
+hash of it — a lost one is re-minted, never looked up.
+
+```bash
+printf '%s' 'pl_porch-1_...' | sudo tee /etc/porchlight/credential > /dev/null
+sudo chmod 0600 /etc/porchlight/credential
+sudo chown "$(whoami)" /etc/porchlight/credential     # see the ownership trap below
+```
+
+`printf` rather than `echo` because the credential is compared verbatim;
+`server-bridge.py` strips whitespace but nothing should depend on that. Check it
+before starting anything:
+
+```bash
+/usr/local/lib/porchlight/server-bridge.py --url <SERVER_URL> \
+  --device-id porch-1 --credential-file /etc/porchlight/credential --check
+```
+
+That prints the device's name and location straight from the server, and proves
+the credential, the URL and the network in one call without opening a socket.
+
+**Two traps in the systemd unit, and they are the reason it is not enabled yet.**
+
+The unit runs as `User=porchlight`, so a credential at `0600` owned by anyone
+else is unreadable and the daemon fails with a permission error rather than an
+authentication one. `chown porchlight` it when the unit is what starts the
+daemon, and `chown` it to yourself while you are running it by hand.
+
+More importantly, the unit sets `StandardInput=null`, and `backends.input` has
+exactly one implementation — `stdin`. **Under systemd the daemon would start,
+connect, and never see an event**, because nothing can type at it and the GPIO
+backend does not exist. Until the button and the PIR are wired, run it in a
+terminal:
+
+```bash
+/usr/local/bin/porchlightd /etc/porchlight/porchlightd.json
+```
+
+The spool is the other thing systemd normally provides: `StateDirectory=porchlight`
+creates `/var/lib/porchlight` and gives it to the right user. Running by hand,
+either create it yourself or point `spool.path` somewhere you own.
+
 ## Clips
 
 `backends.uploader = "script"` is the real one. It writes `<eventId>.json`
