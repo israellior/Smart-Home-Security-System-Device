@@ -15,12 +15,16 @@ Each step adds exactly one thing that can break.
 |---|---|---|
 | 0 | git init, first commit | **done** |
 | 1 | Schema doc, skeleton: CMake, loop, logging, config, signals | **done** |
-| 2 | The core and its unit tests | **done — 57 passing** |
+| 2 | The core and its unit tests | **done — 65 passing** |
 | 3 | Fake backends, so the whole flow runs from the keyboard | **done** |
 
 Verified on both machines: WSL2 GCC 13.3 and the Pi's GCC 14.2, Debug and
-Release, 0 warnings — 48/48 each when the Pi last ran them, 57/57 on WSL since
-the clip work. Build Release before believing a clean build —
+Release, 0 warnings — 48/48 each when the Pi last ran them, 65/65 on WSL since
+the camera work. There are two test binaries now: `core_tests` links only
+`porchlight_core`, which is what keeps "no I/O in the core" true rather than
+merely intended, and `runtime_tests` reaches into `porchlight_runtime` to check
+the GStreamer command line the recorder builds — a string, so it needs no
+camera, no sound card and no Pi. Build Release before believing a clean build —
 `-Wmaybe-uninitialized` does nothing at `-O0`, and that hid 22 reports for a
 while.
 
@@ -45,7 +49,41 @@ gave it away, which is why the child's output is not redirected.
 | 5 | Server link: alerts to the real app server | **done** |
 | 6 | Clips: sidecar, real upload, spool cap | **done, against a stub** |
 | 7 | The same against the real `/api/clips/...` | next, and not ours alone |
-| — | LED, button, PIR, camera | waiting on parts |
+| — | Camera: real footage in the clips | **done 2026-09-22** |
+| — | LED, button, PIR | waiting on parts |
+
+**The camera (2026-09-22).** `recorder.video_source: "libcamera"` now records a
+real Camera Module 3 Wide instead of `videotestsrc`, and the example config is
+set that way. Four things had to go with it, all of them learned the hard way in
+`webrtc-video.py` the same day and all of them asserted in
+[`tests/pipeline_test.cpp`](tests/pipeline_test.cpp):
+
+- **`alsasrc provide-clock=false`, but only when the source is the camera.**
+  `alsasrc` offers the sound card as the pipeline clock and `libcamerasrc`
+  offers none, so with both present GStreamer picks the card's — while
+  `libcamerasrc` goes on timestamping from the system monotonic clock whatever
+  was chosen. Every video buffer then carries a running time worked out across
+  two time bases. In `webrtc-video.py` that stalls the video branch within a
+  second, silently, while audio runs on perfectly. There the fix is
+  `pipeline.use_clock()`; from a `gst-launch` command line there is no such
+  call, so the card declines the job instead. The `videotestsrc` path is left
+  exactly as it was verified, because `videotestsrc` follows whichever clock
+  the pipeline picked and never had the problem.
+- **`sensor-config` pinned to 2304×1296.** Otherwise libcamera picks the
+  imx708's binned 1536×864 mode, which reads only the centre 3072×1728 of the
+  array — a third of the frame width gone, on the lens bought for its width.
+- **`af-mode=continuous`.** It defaults to *manual* at `lens-position` 0, and
+  0 dioptres is infinity: an unconfigured camera films the horizon while the
+  caller stands a metre away.
+- **`format=I420` on the camera caps**, or it negotiates NV21 and the
+  `videoconvert` de-interleaves every frame instead of passing it through.
+
+Two warnings at startup rather than silent surprises: a non-16:9 `width`/
+`height` (the imx708 is 16:9, so 4:3 is cropped by the ISP), and
+`encoder: "v4l2"`, which **stalls outright when fed by `libcamerasrc`** — even
+a bare `libcamerasrc ! videoconvert ! v4l2h264enc ! fakesink` produces nothing,
+where `x264enc` runs at 30 fps. Not yet investigated; `x264` is the tested path
+with the camera.
 
 Out of scope for now: libgpiod, the kernel driver, the real server protocol,
 changes to the media script, pre-roll recording, multi-viewer relay, first-boot
@@ -306,7 +344,7 @@ available to fall back to when something misbehaves at 11pm.
 |---|---|---|
 | LED | `backends.led: "gpio"` | `io/gpio_led.*` |
 | Button + PIR | `backends.input: "gpio"` | `io/gpio_input.*`, `io/debounce.h` |
-| Camera | `recorder.video_source: "libcamera"` | none — step 4 already branches |
+| Camera | `recorder.video_source: "libcamera"` | **done** — see "The camera" above |
 | Real recorder | `backends.recorder: "gstreamer"` | step 4 |
 
 An unknown backend name is a startup error naming the key, never a silent

@@ -43,13 +43,13 @@
   },
 
   "recorder": {
-    "video_source": "test",
-    "audio_source": "test",
+    "video_source": "libcamera",
+    "audio_source": "alsa",
     "audio_device": "hw:CARD=wm8960soundcard",
     "encoder": "x264",
     "aac_element": "avenc_aac",
     "width": 640,
-    "height": 480,
+    "height": 360,
     "fps": 30,
     "video_bitrate_kbps": 2000
   },

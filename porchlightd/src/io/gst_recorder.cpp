@@ -24,17 +24,40 @@ constexpr std::chrono::seconds kEosGrace{5};
 // smaller did not survive its muxer.
 constexpr std::uintmax_t kMinPlausibleBytes = 1024;
 
+// The full sensor array on an imx708. libcamera otherwise picks the binned
+// 1536x864 mode for any small request, and that mode reads only the centre
+// 3072x1728 of the 4608x2592 array - on the Camera Module 3 *Wide* that throws
+// away about a third of the frame width, which is the field of view the wide
+// lens exists for. 2304x1296 covers the whole array and still runs at 56 fps,
+// so it carries 30 with room to spare; the ISP scales it to whatever size the
+// config asks for.
+constexpr const char* kFullFrameSensorMode =
+    "sensor-config=\"sensor/config,width=2304,height=1296,depth=10\"";
+
 void add_video(std::vector<std::string>& args, const RecorderConfig& config) {
-  if (config.video_source == "libcamera") {
+  const bool camera = config.video_source == "libcamera";
+  if (camera) {
     args.push_back("libcamerasrc");
+    // A Camera Module 3 starts in *manual* focus at lens-position 0, and 0
+    // dioptres is infinity - so an unconfigured camera films the horizon while
+    // whoever rang the bell stands a metre away. Continuous is the safe choice
+    // while the mounting distance is unknown; a fixed lens-position is better
+    // once the camera stops moving, because AF hunts on a static scene.
+    args.push_back("af-mode=continuous");
+    args.push_back(kFullFrameSensorMode);
   } else {
     args.push_back("videotestsrc");
     args.push_back("is-live=true");
     args.push_back("pattern=ball");
   }
   args.push_back("!");
-  args.push_back(std::format("video/x-raw,width={},height={},framerate={}/1", config.width,
-                             config.height, config.fps));
+  // format=I420 only on the camera branch: left to itself libcamerasrc
+  // negotiates NV21, and the videoconvert below then de-interleaves chroma on
+  // every frame instead of passing it straight through. videotestsrc already
+  // produces I420, so pinning it there would say nothing.
+  args.push_back(std::format("video/x-raw,{}width={},height={},framerate={}/1",
+                             camera ? "format=I420," : "", config.width, config.height,
+                             config.fps));
   args.push_back("!");
   // Gives the source a thread of its own, so encoding never stalls capture.
   args.push_back("queue");
@@ -77,6 +100,23 @@ void add_audio(std::vector<std::string>& args, const RecorderConfig& config) {
     args.push_back("alsasrc");
     // The device name contains an '=', so the parser needs it quoted.
     args.push_back(std::format("device=\"{}\"", config.audio_device));
+    // alsasrc offers the sound card as the pipeline clock and libcamerasrc does
+    // not offer one at all, so with both present GStreamer picks the card's.
+    // libcamerasrc goes on timestamping from the system monotonic clock
+    // whatever the pipeline chose, so every video buffer ends up with a running
+    // time worked out by subtracting a base time in one clock's units from a
+    // timestamp in another's. In webrtc-video.py that stalls the video branch
+    // within a second while audio carries on perfectly and hides the cause.
+    //
+    // That fix is pipeline.use_clock(), and there is no such call from a
+    // gst-launch command line - so the sound card declines the job instead and
+    // the pipeline falls back to the system clock. Only when the camera is the
+    // source: videotestsrc paces itself off whichever clock was chosen, so the
+    // tested videotestsrc + alsasrc path keeps the behaviour it was verified
+    // with, including its 200 ms buffer.
+    if (config.video_source == "libcamera") {
+      args.push_back("provide-clock=false");
+    }
     // Deliberately not the 40 ms that webrtc-video.py uses. A call trades
     // buffer for latency; a recording has no latency requirement at all, and
     // 40 ms of slack cost this Pi a quarter of its samples.
@@ -140,6 +180,24 @@ GstRecorder::GstRecorder(Reactor& reactor, EventSink sink, RecorderConfig config
     timer_.drain();
     on_timer();
   });
+
+  // Said once at startup rather than per clip. Neither is fatal and neither is
+  // this code's business to override - a wrong aspect still records, and a
+  // stalled encoder is a thing to see reported rather than guessed at.
+  if (config_.video_source == "libcamera") {
+    if (config_.width * 9 != config_.height * 16) {
+      log(Level::Warn, "rec",
+          "{}x{} is not 16:9 but the imx708 is, so the ISP will crop the sides off - "
+          "on the wide lens that is the field of view it exists for. 640x360 or 1280x720.",
+          config_.width, config_.height);
+    }
+    if (config_.encoder == "v4l2") {
+      log(Level::Warn, "rec",
+          "encoder=v4l2 stalls when fed by libcamerasrc - even a bare "
+          "libcamerasrc ! videoconvert ! v4l2h264enc ! fakesink produces nothing, where "
+          "x264enc runs at 30 fps. x264 is the tested path with the camera.");
+    }
+  }
 }
 
 GstRecorder::~GstRecorder() {

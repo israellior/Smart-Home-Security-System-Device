@@ -23,5 +23,16 @@ add_executable(core_tests
 target_include_directories(core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(core_tests PRIVATE porchlight_core GTest::gtest_main)
 
+# Separate from core_tests on purpose: src/core/ has no I/O and links nothing,
+# and that stays true only if its tests keep linking nothing either. This one
+# reaches into porchlight_runtime to check what the recorder asks GStreamer
+# for - a string, so it needs no camera, no sound card and no Pi.
+add_executable(runtime_tests
+  pipeline_test.cpp)
+
+target_include_directories(runtime_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(runtime_tests PRIVATE porchlight_runtime GTest::gtest_main)
+
 include(GoogleTest)
 gtest_discover_tests(core_tests)
+gtest_discover_tests(runtime_tests)
