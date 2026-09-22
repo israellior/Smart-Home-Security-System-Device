@@ -27,6 +27,17 @@ struct Backends {
   std::string recorder{"fake"};
 };
 
+struct ServerConfig {
+  std::string base_url{"http://127.0.0.1:4000"};
+  // Written onto the card when the device is built. There is no enrolment
+  // call, so a missing one means the device has to be re-minted.
+  std::filesystem::path credential_path{"/etc/porchlight/credential"};
+  std::filesystem::path bridge_path{"/usr/local/lib/porchlight/server-bridge.py"};
+  // How long silence is allowed to last before it counts as a failure. The
+  // server signals transient trouble by not answering at all.
+  std::chrono::seconds ack_timeout{10};
+};
+
 struct ChimeConfig {
   // plughw rather than hw, so ALSA converts whatever the file happens to be
   // into what the card accepts instead of refusing it at the wrong rate.
@@ -66,6 +77,7 @@ struct Config {
   Level log_level{Level::Info};
   Backends backends;
   Policy policy;
+  ServerConfig server;
   ChimeConfig chime;
   SpoolConfig spool;
   RecorderConfig recorder;

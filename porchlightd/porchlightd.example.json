@@ -6,7 +6,7 @@
     "input": "stdin",
     "led": "console",
     "chime": "alsa",
-    "server": "log",
+    "server": "bridge",
     "uploader": "log",
     "media": "stub",
     "recorder": "gstreamer"
@@ -18,10 +18,17 @@
     "motion_cooldown_seconds": 25,
     "press_dedup_window_seconds": 5,
     "ring_led_seconds": 5,
-    "alert_max_age_seconds": 900,
-    "max_queued_alerts": 32,
+    "alert_max_age_seconds": 86400,
+    "max_queued_alerts": 200,
     "retry_backoff_initial_seconds": 2,
     "retry_backoff_max_seconds": 60
+  },
+
+  "server": {
+    "base_url": "http://192.168.0.219:4000",
+    "credential_path": "/etc/porchlight/credential",
+    "bridge_path": "/usr/local/lib/porchlight/server-bridge.py",
+    "ack_timeout_seconds": 10
   },
 
   "chime": {

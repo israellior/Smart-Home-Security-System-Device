@@ -3,6 +3,7 @@
 #include <format>
 
 #include "io/alsa_chime.h"
+#include "io/bridge_server_link.h"
 #include "io/console_chime.h"
 #include "io/console_led.h"
 #include "io/fake_recorder.h"
@@ -89,6 +90,9 @@ Hardware make_hardware(const Config& config, Reactor& reactor, const EventSink& 
     LoggingServerLink* raw = fake.get();  // owned by hardware.server below
     link = [raw](bool online) { raw->set_online(online); };
     hardware.server = std::move(fake);
+  } else if (config.backends.server == "bridge") {
+    hardware.server =
+        std::make_unique<BridgeServerLink>(reactor, sink, config.server, config.device_id);
   } else {
     unknown("server", config.backends.server);
   }

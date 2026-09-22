@@ -213,6 +213,13 @@ Config load_config(const std::filesystem::path& path) {
       timings.seconds_or("retry_backoff_initial_seconds", p.retry_backoff_initial);
   p.retry_backoff_max = timings.seconds_or("retry_backoff_max_seconds", p.retry_backoff_max);
 
+  const Section server = root.section("server");
+  cfg.server.base_url = server.string_or("base_url", cfg.server.base_url);
+  cfg.server.credential_path =
+      server.string_or("credential_path", cfg.server.credential_path.string());
+  cfg.server.bridge_path = server.string_or("bridge_path", cfg.server.bridge_path.string());
+  cfg.server.ack_timeout = server.seconds_or("ack_timeout_seconds", cfg.server.ack_timeout);
+
   const Section chime = root.section("chime");
   cfg.chime.device = chime.string_or("device", cfg.chime.device);
   cfg.chime.sound = chime.string_or("sound", cfg.chime.sound.string());

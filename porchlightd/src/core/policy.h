@@ -23,8 +23,13 @@ struct Policy {
 
   std::chrono::seconds ring_led{5};
 
-  std::chrono::seconds alert_max_age{900};
-  std::size_t max_queued_alerts{32};
+  // A day, and two hundred. The server signals a transient failure by not
+  // acknowledging at all and expects the device to keep trying, so these are
+  // deliberately far larger than a plausible outage. Tight values here mean
+  // real doorbell presses are dropped before they are ever sent - a backlog
+  // of forty against the live server needed three retry rounds to land.
+  std::chrono::seconds alert_max_age{86400};
+  std::size_t max_queued_alerts{200};
 
   // Shared by the alert queue and the clip uploader: both are waiting on the
   // same server, so they retry on the same schedule.
