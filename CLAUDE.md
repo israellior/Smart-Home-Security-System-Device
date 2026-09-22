@@ -41,8 +41,8 @@ Following a five-step plan. Each step adds exactly one thing that can break.
 | 1 | Video only, `videotestsrc`, Pi → browser | **done, working end to end** |
 | 2 | Add the Pi's microphone (Opus) | **done** |
 | 3 | Add browser mic → Pi speaker | **done — it is a call** |
-| 4 | Echo cancellation (`webrtcdsp`) | **next, and now unavoidable** |
-| 5 | Swap `videotestsrc` for `libcamerasrc` | needs a camera + `gstreamer1.0-libcamera` |
+| 4 | Echo cancellation (`webrtcdsp`) | **next, and the only step left** |
+| 5 | Swap `videotestsrc` for `libcamerasrc` | **done 2026-09-22 — a real camera** |
 
 Then Phase 2: print the SDP, hand-write RTP packetisation, hand-write a jitter
 buffer, drive V4L2 directly (`/dev/video0`, then the encoder at `/dev/video11`).
@@ -51,7 +51,8 @@ buffer, drive V4L2 directly (`/dev/video0`, then the encoder at `/dev/video11`).
 video decoding in the browser with the Pi's clock overlay visible. Measured delay
 **≈ 150 ms** with the software encoder at 640×480/30. Host-to-host candidates, so
 the media goes straight between the two machines and never through `server.js`.
-The hardware encoder (`--encoder v4l2`) has not been tried yet.
+The hardware encoder (`--encoder v4l2`) has still not been made to work: it
+stalls outright with `libcamerasrc` (see Step 5).
 
 **Step 2 (2026-09-18):** a second track was added to the *same* `webrtcbin`, not a
 second connection — one transport, one pipeline clock, one set of RTCP sender
@@ -135,6 +136,89 @@ a silent speaker:
 - packets but `dBFS - that is silence` → arriving and decoding, but empty
 - packets and a real level → it is the output, not WebRTC
 
+**Step 5 result (2026-09-22): working — a real camera, both directions, one
+connection.** A Camera Module 3 Wide at 640×360/30 into the same `webrtcbin` as
+the microphone and the speaker. The only thing that changed downstream of the
+caps was nothing at all: `videotestsrc` came out and `libcamerasrc` went in, and
+the encoder, payloader, transceivers and signalling were untouched.
+
+Two faults stood between those two facts, and both are written up below: the
+**clock** one, which is the important lesson of this step, and the ribbon, which
+was not a software problem at all — see "The camera" under The machines.
+
+`--video` chooses the source and defaults to **`camera`**, for the same reason
+`--audio` defaults to `alsa`. `--video test` is `videotestsrc` again, unchanged,
+and is the bisect tool for "is it the camera or is it everything else".
+
+Three decisions worth keeping:
+
+**`libcamerasrc`, not `v4l2src`.** `/dev/video0` is the sensor, and what comes out
+of it is raw Bayer — the Pi's ISP is a *separate* device that turns that into a
+picture. libcamera drives both halves as one unit. (Phase 2 drives them by hand;
+that is the whole point of `/dev/video0` then `/dev/video11`.)
+
+**The imx708 is 16:9 (4608×2592), so the camera default is 640×360, not 640×480.**
+Asking a 16:9 sensor for 4:3 makes the ISP crop the sides off to match — which on
+the **wide** lens throws away exactly the field of view the wide lens was bought
+for. `--size 1280x720` is there, and wants `--encoder v4l2`; the script says so
+itself when the software encoder is asked for more than 640×480.
+
+**No pixel format is pinned on the camera caps.** The encoder branch already asks
+for `I420`, and that preference negotiates back up through `videoconvert`, so
+libcamera hands over I420 directly and `videoconvert` becomes a passthrough.
+Pinning it at the source would turn a free conversion into a hard failure on any
+size the ISP will not produce I420 at. `check-camera.sh` prints the format that
+was actually negotiated, which is how to tell whether that worked.
+
+A `queue max-size-buffers=2 leaky=downstream` sits between the camera and the
+overlay. `leaky=downstream` drops the **oldest** buffer, not the newest, so an
+encoder that cannot keep up costs dropped frames instead of a picture that falls
+further behind the sound every second. The symptom of an overloaded encoder is
+therefore a jerky picture, not a growing delay.
+
+**The one that cost a whole session: `alsasrc` provides a clock, `libcamerasrc`
+does not.** With both in one pipeline GStreamer makes the *sound card's* clock the
+pipeline clock, while `libcamerasrc` goes on timestamping from the system
+monotonic clock regardless. Every video buffer then reaches `webrtcbin` with a
+running time computed by subtracting a base time in one clock's units from a
+timestamp in another's, and **the video branch stalls within a second** — the
+camera keeps delivering 30 fps and nothing leaves the payloader — while audio,
+stamped against its own clock, runs perfectly and hides the cause. `Session` now
+calls `pipeline.use_clock(Gst.SystemClock.obtain())`.
+
+`videotestsrc` paces itself off whichever clock the pipeline chose, so Steps 1–3
+were immune by accident and this only appeared at Step 5.
+
+What made it hard to find is that every cheap test misses it:
+
+| Test | Result | Why it proves nothing |
+|---|---|---|
+| `libcamerasrc ! … ! x264enc ! fakesink sync=false` | 30 fps | no `alsasrc`, so no clock conflict |
+| the same with `sync=true` | 30 fps | still no `alsasrc` |
+| `--video test` into the real pipeline | works | `videotestsrc` follows the pipeline clock |
+| `--audio none` with the camera | works | removes the other clock |
+| camera + `--audio alsa` | **stalls** | the only combination that has both |
+
+**So the bisect that finds it is `--audio none`, not any amount of `gst-launch`.**
+Two plausible theories were eliminated first and neither was right: the pinned
+`I420` making `videoconvert` a passthrough (tested — the branch runs fine either
+way), and `libcamerasrc`'s timestamps being unusable (tested with `sync=true` —
+they are fine, against the *right* clock).
+
+**`v4l2h264enc` does not work with `libcamerasrc`** — a plain
+`libcamerasrc ! videoconvert ! v4l2h264enc ! fakesink` stalls outright, where
+`x264enc` runs at 30 fps. So `--encoder v4l2` is not currently an option with the
+camera, and any move to 720p needs that understood first. Not yet investigated.
+
+Autofocus is set in Python, not in the pipeline string: libcamera exposes each
+sensor control as a GObject property, and which ones exist depends on the sensor
+and the libcamera version, so a missing one in `parse_launch` would take the whole
+pipeline down. `set_focus` reads `list_properties()` first and prints a note
+instead. `--focus` takes `continuous` (the default), `default` (leave libcamera
+alone), or a distance in metres — **a doorbell does not move, and continuous AF
+visibly hunts on a static scene**, so a fixed `--focus 1.5` is probably what this
+wants in the end.
+
 To run headphones-only on the HAT and keep the mics from hearing the speaker
 (worth it until Step 4 exists — the WM8960 drives the two amps separately):
 
@@ -154,13 +238,23 @@ audio ever breaks up.
 
 A healthy run looks like this, and is the quickest way to tell what broke:
 
+- `camera: sensor mode 2304x1296` and `camera: continuous autofocus`
+- libcamera's own `Selected sensor format: 2304x1296-SBGGR10_1X10/RAW` and
+  `configuring streams: (0) 640x360-YUV420` — the second confirms the I420 pin took
 - three `offer: m=...` lines, the last two flagged `port 0 + a=bundle-only: normal`
 - `2 transceiver(s) sending, 1 receiving`
 - all three `answer:` lines with a real port, the third `[sendonly; 98 OPUS/48000/2]`
 - `connection connected`, `ICE completed`
+- `video:` lines reading `30 fps from the source, ~100 RTP packets/2s`, and
+  **staying** that way — this is the line that catches the clock fault
 - `talking back through …`, then `talkback:` lines with a real dBFS figure
 - in the browser, one `route` row for all three tracks (one candidate pair =
   bundling working) and `your mic out` counting bytes
+
+Both directions are counted at the pad, not inferred, and for the same reason:
+negotiation, a pad appearing and a bitrate figure in the browser can all look
+healthy while nothing moves. `video: 30 fps from the source, but no RTP leaving`
+is what turned "the picture froze" into a located fault.
 
 ## The machines
 
@@ -173,10 +267,13 @@ no key is installed, so Claude cannot run commands there. To change that:
   `rtpopuspay`/`rtpopusdepay`, `alsasrc`/`alsasink`, `audioconvert`, `audioresample`,
   `webrtcdsp`, `videotestsrc`, `textoverlay`, `rtph264pay`, `v4l2h264enc`, `x264enc`
 - Python bindings `Gst`, `GstWebRTC`, `GstSdp` all import
-- **`v4l2h264enc` works — this is a Pi 4, which has a hardware H.264 encoder.**
+- **`v4l2h264enc` exists — this is a Pi 4, which has a hardware H.264 encoder.**
   `/dev/video11` is the encoder, `/dev/video10` the decoder. (Do not repeat the
   earlier mistake of assuming a Pi 5; a Pi 5 has no H.264 encode block, a Pi 4 does.)
-- Not installed: `libcamerasrc` (`gstreamer1.0-libcamera`), only needed at Step 5
+  It **stalls when fed by `libcamerasrc`**, though, so `--encoder v4l2` is not
+  usable with the camera — see Step 5. `x264enc` carries 640×360/30 easily.
+- `libcamerasrc` (`gstreamer1.0-libcamera` 0.7.2) installed 2026-09-22, with
+  `rpicam-apps` 1.13.0 already present.
 - Audio out available besides the HAT: `card 3` = the Pi's own headphone jack,
   plus two HDMI outputs. **`card 3` produced no sound when tested 2026-09-18**:
   `speaker-test -D hw:CARD=Headphones` opened it, negotiated 48 kHz stereo, ran
@@ -186,8 +283,97 @@ no key is installed, so Claude cannot run commands there. To change that:
   output to test against until that is settled.
 
 **The server host** — Windows 11, `192.168.0.219`, Node 24.11.1, npm 11.6.2.
-Wi-Fi is classified `Public`; the Node firewall rules do cover that profile.
 Dependencies are only `express` and `ws`.
+
+**The Wi-Fi network is classified `Private` as of 2026-09-22, and this broke the
+Pi's `curl`.** The two `Node.js JavaScript Runtime` inbound rules are scoped to
+the **`Public`** profile only, so when the classification changed nothing on the
+LAN could reach port 3000 any more. The fix, from an **administrator**
+PowerShell, is a rule for the port rather than for `node.exe` — the app rules
+would grant every future Node process inbound access on the home network:
+
+```powershell
+New-NetFirewallRule -DisplayName "Pi intercom signaling (3000)" -Direction Inbound `
+  -Action Allow -Protocol TCP -LocalPort 3000 -Profile Private -RemoteAddress LocalSubnet
+```
+
+To check which way round it is now:
+
+```powershell
+Get-NetConnectionProfile | Select-Object InterfaceAlias, NetworkCategory
+Get-NetFirewallApplicationFilter | Where-Object Program -like '*node*' |
+  ForEach-Object { $_ | Get-NetFirewallRule | Select-Object DisplayName, Profile, Action }
+```
+
+**The camera** — Raspberry Pi Camera Module 3, **wide** (120° FOV, f/2.2). Sensor
+IMX708, 4608×2592, which is **16:9, not 4:3**. It has phase-detect autofocus, which
+the fixed-lens Camera Module 2 did not — so `--focus` is a real control here and
+would have been meaningless before. Fitted and working 2026-09-22.
+
+It goes in the socket silkscreened **CAMERA**, not the identical-looking one
+silkscreened DISPLAY, with the Pi powered off and unplugged. These are bottom-
+contact ZIF sockets: the ribbon's silver contacts face **down** into the socket
+and the blue stiffener faces up, and the latch has to be pressed back down evenly
+on both sides. A ribbon that looks seated but whose latch never clamped is the
+most common failure, and it is invisible from software. Reversing a CSI ribbon
+does no damage, so when in doubt it costs nothing to try it the other way.
+
+A Pi 4 takes the 15-pin cable the module ships with; the 22-pin adapter cable is
+a Pi 5 thing and is not needed here.
+
+The WM8960 HAT covers the GPIO header, not the CSI connector, but it makes the
+ribbon awkward to route — seat the ribbon before the HAT goes back on.
+
+If the sensor is not detected, the ribbon is the cause far more often than
+anything else, and `check-camera.sh` distinguishes "kernel found no sensor" from
+"libcamera cannot open it" from "GStreamer cannot".
+
+**Telling a dead cable from a software fault, in one command.** `camera_auto_detect`
+runs in the VideoCore firmware before Linux exists; when it finds nothing there is
+no overlay, so no sensor in the device tree, no camera I²C bus, no `/dev/video0`
+and `No cameras available!` — five symptoms, one cause, and none of them say
+*why*. Forcing the overlay by hand skips the firmware's decision and makes the
+kernel address the chip directly:
+
+```bash
+sudo dtoverlay imx708 && sleep 2 && dmesg | tail -30
+sudo i2cdetect -y 10          # the muxed bus the overlay creates; NOT i2c-0
+```
+
+It is not persistent, so a reboot undoes it. Read the result like this:
+
+- `imx708 10-001a: failed to read chip id 708, with error -5` — `-EIO`, no ACK on
+  the bus. The overlay, the drivers and the regulator are all fine and the module
+  is not electrically reachable. **Hardware: seating, cable, or the module.**
+  `dw9807 10-000c` failing the same way is the autofocus motor, and confirms the
+  overlay matched a Camera Module 3 rather than something else.
+- `/dev/video0` appears — the camera is fine and only auto-detect failed; pin it
+  with a fixed `dtoverlay=imx708` in `config.txt`.
+
+Three false leads worth not repeating, all of which cost time on 2026-09-22:
+
+- **`dtoverlay -l` lists only overlays applied at *runtime*.** The five in
+  `config.txt` never appear there, so an empty list proves nothing either way.
+- **`vcgencmd get_camera` is useless here.** All three of its fields —
+  `supported=`, `detected=` and `libcamera interfaces=` — read `0` on this OS with
+  a fully working camera that `rpicam-hello` was listing at the same moment. It
+  briefly looked like the decisive test and is not a test at all.
+- **`dtoverlay imx708` failing with "Failed to apply overlay" is good news.** It
+  means the firmware already applied it at boot, i.e. the camera *was* detected.
+  A reboot is what cleared the hand-applied one, so this error appearing after a
+  reseat is the first sign it worked.
+
+**What is actually decisive:** `/dev/video0` existing, a sensor node under
+`/proc/device-tree`, and `rpicam-hello --list-cameras` naming the camera.
+
+**Resolved 2026-09-22.** The cause was the ribbon. With it reseated, the firmware
+detects the camera at boot on its own and `rpicam-hello` reports
+`imx708_wide [4608x2592 10-bit RGGB]` — the *wide* tuning file, which is the
+correct one for this module. No `config.txt` change was needed; `camera_auto_detect=1`
+does the whole job.
+
+`camera_auto_detect=1` in `/boot/firmware/config.txt` is what loads the sensor
+overlay; it is the default, and `check-camera.sh` checks it.
 
 **The audio HAT** — Waveshare WM8960 Hi-Fi Sound Card HAT. An I²S codec on the GPIO
 header, not USB. Two microphones on the board, and speaker + headphone out, so both
@@ -329,6 +515,19 @@ needed yet; decide when something other than the server host wants to talk.
 **4. Restart the server after pulling changes.** A long-running `node server.js`
 keeps serving the old code, including the old `/ws` handler with no signaling.
 
+**The Pi's `curl` fails three different ways, and the symptom tells them apart.**
+Reading one as another costs an hour:
+
+| What you see | What it is |
+|---|---|
+| fast `404` | the server is running old code, or the script is not in `server.js`'s list |
+| fast connection refused | the server is not running — `npm start` |
+| **hangs, 0 bytes, no error** | nothing answers the SYN: the Windows firewall, see "The server host" |
+
+A hang is never a stale route. Check `Get-NetTCPConnection -LocalPort 3000
+-State Listen` on the server host first: if something *is* listening and the Pi
+still hangs, it is the firewall profile every time.
+
 **5. The Windows clock is wrong, which corrupts the on-screen delay measurement.**
 Measured 2026-09-18: **1.76 s fast**, never synced (`Source: Local CMOS Clock`,
 `Last Successful Sync Time: unspecified`). The browser clock therefore reads ~1.76 s
@@ -354,11 +553,11 @@ docs/server-brief.md    What the app server has to provide, written for whoever
 porchlightd/            The C++20 doorbell daemon, with its own README and its own
                         step table. Decides when to alert, record, chime and call.
 server.js               Express + ws. Static files and the signaling switchboard.
-                        163 lines, and carries no media at all.
+                        164 lines, and carries no media at all.
 public/webrtc.html      Steps 1-3: RTCPeerConnection, video + Opus both ways, a
                         level meter per direction, mute, live stats with A/V skew.
                         Warns when it is not a secure context.
-pi/webrtc-video.py      Steps 1-3: videotestsrc -> H.264 and a mic -> Opus out, the
+pi/webrtc-video.py      Steps 1-3 and 5: a camera -> H.264 and a mic -> Opus out, the
                         browser's mic -> alsasink back, all on one webrtcbin, plus
                         signaling. The name is stale; it is the whole Pi client now.
 pi/server-bridge.py     porchlightd's WebSocket to the app server, as a child
@@ -367,6 +566,9 @@ pi/upload-clip.py       One clip, in three steps - signed url, PUT, confirm. Jud
                         by its exit code alone; only the confirm earns a 0.
 pi/check-audio.sh       Read-only hardware audit: card, driver conflicts, mixer, a real
                         recording with levels, GStreamer elements, Python bindings.
+pi/check-camera.sh      The same for the camera: overlay, sensor driver, what
+                        libcamera sees, a real still, and timed GStreamer capture
+                        through each encoder. Read-only. Run it before Step 5.
 pi/fix-wm8960.sh        Surveys Waveshare's installer and undoes it reversibly.
                         --apply moves files to /var/backups/wm8960-fix, --restore
                         puts them back. Refuses to act on anything ambiguous.
@@ -378,9 +580,9 @@ tools/clip-stub.js      The app server's clip endpoints and a bucket, faked - an
                         request. --fail / --fail-once / --expire-after.
 ```
 
-`server.js` serves `pi/*` scripts by name (`/check-audio.sh`, `/fix-wm8960.sh`,
-`/webrtc-video.py`, `/server-bridge.py`, `/upload-clip.py`) so the Pi can
-`curl -fO` them. Add new Pi scripts to that list.
+`server.js` serves `pi/*` scripts by name (`/check-audio.sh`, `/check-camera.sh`,
+`/fix-wm8960.sh`, `/webrtc-video.py`, `/server-bridge.py`, `/upload-clip.py`) so
+the Pi can `curl -fO` them. Add new Pi scripts to that list.
 
 ## The signaling protocol
 
@@ -435,20 +637,33 @@ On the Pi:
 
 ```bash
 curl -fO http://192.168.0.219:3000/check-audio.sh && chmod +x check-audio.sh && ./check-audio.sh
+curl -fO http://192.168.0.219:3000/check-camera.sh && chmod +x check-camera.sh && ./check-camera.sh
 curl -fO http://192.168.0.219:3000/fix-wm8960.sh && chmod +x fix-wm8960.sh && ./fix-wm8960.sh
 curl -fO http://192.168.0.219:3000/webrtc-video.py && chmod +x webrtc-video.py
-./webrtc-video.py 192.168.0.219                    # video + mic in + speaker out
+./webrtc-video.py 192.168.0.219                    # camera + mic in + speaker out
+./webrtc-video.py 192.168.0.219 --video test       # videotestsrc again, to bisect
+./webrtc-video.py 192.168.0.219 --size 1280x720 --encoder v4l2
+./webrtc-video.py 192.168.0.219 --focus 1.5        # fix the lens, no AF hunting
 ./webrtc-video.py 192.168.0.219 --no-talkback      # Step 2 again, one way only
 ./webrtc-video.py 192.168.0.219 --audio test       # a tick, while the HAT is down
 ./webrtc-video.py 192.168.0.219 --audio none       # Step 1 again, video only
 ./webrtc-video.py 192.168.0.219 --encoder v4l2     # the Pi 4's hardware encoder
 ./webrtc-video.py 192.168.0.219 --print-sdp        # dump the offer and answer
-./webrtc-video.py 192.168.0.219 --pattern smpte    # colour bars instead of the ball
+./webrtc-video.py 192.168.0.219 --pattern smpte    # --video test: bars, not the ball
 ./webrtc-video.py 192.168.0.219 --speaker-device hw:CARD=Headphones
 ```
 
+A camera goes to one process at a time, exactly like an ALSA `hw:` device — a
+stray `rpicam-hello` will make `webrtc-video.py` fail to open it, and the other
+way round.
+
 `--mic-device` and `--speaker-device` both default to `hw:CARD=wm8960soundcard`.
-Audio needs `gstreamer1.0-alsa` as well as the plugin sets Step 1 wanted.
+Audio needs `gstreamer1.0-alsa` as well as the plugin sets Step 1 wanted, and the
+camera needs `gstreamer1.0-libcamera`:
+
+```bash
+sudo apt install -y gstreamer1.0-libcamera rpicam-apps
+```
 
 **Until Step 4, the Pi will hear itself.** One card, speaker centimetres from the
 microphones, no cancellation. Use headphones on the Pi, keep the volume down, or

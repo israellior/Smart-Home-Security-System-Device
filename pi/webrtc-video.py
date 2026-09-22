@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Steps 1-3: a call between the Pi and a browser, over one WebRTC connection.
+"""Steps 1-3 and 5: a call between the Pi and a browser, over one WebRTC connection.
 
-    videotestsrc -> clock overlay -> H.264 -> rtph264pay --\\
+    libcamerasrc -> clock overlay -> H.264 -> rtph264pay --\\
                                                             >-- webrtcbin <-> browser
     alsasrc (WM8960) -> 48 kHz mono -> Opus -> rtpopuspay -/       |
                                                                   v
@@ -10,7 +10,9 @@
 Step 1 was the handshake with one video track. Step 2 put a second track on the
 *same* webrtcbin - one transport, one pipeline clock, one set of RTCP sender
 reports, which is what holds sound and picture together. Step 3 adds a third
-m-line pointing the other way, and that makes it a call.
+m-line pointing the other way, and that makes it a call. Step 5 changes only
+where the picture comes from: a real camera instead of videotestsrc, which
+touches nothing downstream of the caps.
 
 The return path is built differently from the other two on purpose. There is no
 branch for it in the pipeline below, because nothing here produces it: it is
@@ -18,7 +20,10 @@ asked for with add-transceiver, and webrtcbin grows a src pad for it only once
 the browser answers and starts sending. The speaker chain is assembled in
 on_incoming_stream, against a pipeline that is already PLAYING.
 
-    ./webrtc-video.py 192.168.0.219                     mic in, speaker out
+    ./webrtc-video.py 192.168.0.219                     camera, mic in, speaker out
+    ./webrtc-video.py 192.168.0.219 --video test        videotestsrc, Steps 1-3 again
+    ./webrtc-video.py 192.168.0.219 --size 1280x720     bigger picture
+    ./webrtc-video.py 192.168.0.219 --focus 1.5         fix the lens at 1.5 m
     ./webrtc-video.py 192.168.0.219 --no-talkback       Step 2 again, one way
     ./webrtc-video.py 192.168.0.219 --audio test        a tick, when the HAT is down
     ./webrtc-video.py 192.168.0.219 --audio none        Step 1 again, video only
@@ -34,7 +39,8 @@ microphone, so it will hear itself until Step 4 adds webrtcdsp - headphones, or
 
 Needs:  sudo apt install -y python3-gi python3-gst-1.0 python3-websocket \
           gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-          gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-alsa
+          gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-alsa \
+          gstreamer1.0-libcamera
 """
 
 import argparse
@@ -70,14 +76,58 @@ DEFAULT_SPEAKER = "hw:CARD=wm8960soundcard"
 # candidates, and two clocks to reconcile instead of one.
 WEBRTC = "webrtcbin name=webrtc bundle-policy=max-bundle"
 
+# Step 5. The Camera Module 3 has no usable V4L2 capture path of its own:
+# /dev/video0 hands back raw Bayer, and it is the Pi's ISP - a separate device -
+# that turns that into a picture. libcamera drives both halves as one unit, so
+# libcamerasrc is the source, not v4l2src.
+#
+# format=I420 is pinned deliberately, and this was measured rather than assumed.
+# Left to itself libcamerasrc negotiates NV21 here, which makes the videoconvert
+# in the encoder branch do a real de-interleave on every frame instead of being
+# the passthrough it is with videotestsrc. The Pi's ISP produces I420 directly,
+# so asking for it moves that work to hardware that was going to run anyway.
+#
+# The queue is what stops latency growing when the encoder falls behind.
+# leaky=downstream discards the *oldest* buffer rather than the newest, so a
+# slow encoder costs dropped frames instead of a picture that drifts further
+# behind the sound with every second.
+CAMERA = (
+    "libcamerasrc name=camera"
+    " ! video/x-raw,format=I420,width={width},height={height},framerate={fps}/1"
+    " ! queue max-size-buffers=2 leaky=downstream"
+)
+
+# libcamera chooses a sensor mode to satisfy the requested output size, and for
+# anything at or below 1536x864 it picks the imx708's binned 1536x864 mode. That
+# mode reads only the centre 3072x1728 of the 4608x2592 array - rpicam-hello
+# reports it as "(768, 432)/3072x1728 crop" - which throws away about a third of
+# the frame width. On the WIDE lens that is roughly 120 degrees of diagonal
+# field of view reduced to about 98, and no amount of scaling gets it back.
+#
+# 2304x1296 reads the full array and still runs at 56 fps, so it carries 30 fps
+# with room to spare; the ISP scales it down to whatever --size asked for. The
+# cost is sensor readout and ISP bandwidth, not CPU.
+FULL_FRAME_MODE = "sensor/config,width=2304,height=1296,depth=10"
+
 # A moving pattern by default, so a frozen picture is obvious at a glance rather
 # than looking like a still image that arrived correctly. "ball" is one small ball
 # on a black field, which reads as a blank screen in a small window; "smpte" gives
 # the familiar colour bars instead, with the clock overlay to prove it is live.
-SOURCE = (
+TEST_SOURCE = (
     "videotestsrc is-live=true pattern={pattern} animation-mode=running-time"
-    " ! video/x-raw,width=640,height=480,framerate=30/1"
+    " ! video/x-raw,width={width},height={height},framerate={fps}/1"
 )
+
+# The imx708 is 4608x2592 - 16:9. Ask it for 4:3 and the ISP crops the sides off
+# to match, which on the *wide* lens throws away exactly the field of view the
+# wide lens was bought for. So the camera's default is 16:9, at about the same
+# pixel count and the same bitrate as the 4:3 one it replaces.
+#
+# videotestsrc keeps 640x480 rather than following it, because its whole job now
+# is to reproduce Steps 1-3 unchanged when the camera is the suspect.
+CAMERA_SIZE = "640x360"
+TEST_SIZE = "640x480"
+DEFAULT_FPS = 30
 
 # The Pi's wall clock, burnt into the picture with millisecond resolution. Put the
 # browser's own clock next to the video and the difference is the delay.
@@ -109,7 +159,7 @@ ENCODERS = {
 # than collecting a whole frame first.
 PAYLOAD = (
     " ! h264parse config-interval=-1"
-    " ! rtph264pay pt=96 config-interval=-1 aggregate-mode=zero-latency"
+    " ! rtph264pay name=vpay pt=96 config-interval=-1 aggregate-mode=zero-latency"
     " ! application/x-rtp,media=video,encoding-name=H264,payload=96"
     " ! webrtc."
 )
@@ -200,6 +250,100 @@ def require(name, hint):
         sys.exit(f"missing GStreamer element '{name}' - {hint}")
 
 
+def parse_size(text):
+    """WIDTHxHEIGHT, checked here so a typo fails before the camera is opened."""
+    try:
+        width, height = (int(n) for n in text.lower().split("x", 1))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected WIDTHxHEIGHT, got {text!r}")
+    if width < 64 or height < 64:
+        raise argparse.ArgumentTypeError(f"{text} is too small to be a picture")
+    return width, height
+
+
+def parse_focus(text):
+    """'continuous', 'default', or a distance in metres."""
+    if text in ("continuous", "default"):
+        return text
+    try:
+        metres = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected 'continuous', 'default' or a distance in metres, got {text!r}"
+        )
+    if metres <= 0:
+        raise argparse.ArgumentTypeError("a focus distance has to be greater than zero")
+    return metres
+
+
+def set_sensor_mode(camera, spec):
+    """Force the full-frame sensor mode, so the wide lens stays wide.
+
+    Same reasoning as set_focus: sensor-config is a recent addition to
+    libcamerasrc and setting a property that is not there is fatal, so it is
+    applied here rather than in the parse_launch string.
+    """
+    if "sensor-config" not in {p.name for p in camera.list_properties()}:
+        print("camera: this libcamerasrc cannot choose the sensor mode, so the field")
+        print("        of view is whatever libcamera picks for the requested size")
+        return
+
+    # new_from_string is the binding-friendly one and returns None on a bad
+    # string; from_string is older and hands back a tuple in some versions.
+    if hasattr(Gst.Structure, "new_from_string"):
+        structure = Gst.Structure.new_from_string(spec)
+    else:
+        parsed = Gst.Structure.from_string(spec)
+        structure = parsed[0] if isinstance(parsed, tuple) else parsed
+    if structure is None:
+        print(f"camera: could not parse sensor config {spec!r}, leaving it automatic")
+        return
+
+    camera.set_property("sensor-config", structure)
+    print(
+        f"camera: sensor mode {structure.get_value('width')}x{structure.get_value('height')}"
+        " - the full array, so the wide lens keeps its field of view"
+    )
+
+
+def set_focus(camera, focus):
+    """Point the Camera Module 3's autofocus, if this libcamera exposes it.
+
+    libcamera's GStreamer element turns each of the sensor's controls into a
+    GObject property, but which ones exist depends on the sensor and on the
+    libcamera version - a fixed-focus Camera Module 2 has none of these at all.
+    Setting a property that is not there is fatal, and putting them in the
+    parse_launch string would take the whole pipeline down with it, so they are
+    applied here where a missing one is a printed note instead.
+
+    Leaving focus alone is not a neutral choice here. libcamerasrc's af-mode
+    defaults to *manual* with lens-position 0, and 0 dioptres is infinity - so
+    an unconfigured Camera Module 3 sits focused past the horizon while the
+    caller stands a metre away. Something has to be set.
+    """
+    names = {spec.name for spec in camera.list_properties()}
+    if "af-mode" not in names:
+        print("camera: this libcamerasrc has no af-mode, leaving focus alone")
+        return
+
+    if focus == "continuous":
+        Gst.util_set_object_arg(camera, "af-mode", "continuous")
+        print("camera: continuous autofocus")
+        return
+
+    # A doorbell does not move, and continuous autofocus hunts on a static
+    # scene - it refocuses on nothing, visibly, every few seconds. Fixing the
+    # lens at the distance of the doorstep costs nothing and never hunts.
+    # libcamera measures lens position in dioptres, which is 1/metres.
+    if "lens-position" not in names:
+        print("camera: no lens-position property, falling back to continuous autofocus")
+        Gst.util_set_object_arg(camera, "af-mode", "continuous")
+        return
+    Gst.util_set_object_arg(camera, "af-mode", "manual")
+    camera.set_property("lens-position", 1.0 / focus)
+    print(f"camera: focus fixed at {focus:g} m (lens-position {1.0 / focus:.2f})")
+
+
 DIRECTIONS = ("a=sendrecv", "a=sendonly", "a=recvonly", "a=inactive")
 
 
@@ -260,13 +404,32 @@ class Session:
         self.talk_bytes = 0
         self.talk_seen = (0, 0)  # packets, bytes at the last report
         self.talk_level = None
-        self.talk_timer = 0
+
+        # And the same for the way out, at BOTH ends of the video branch. A
+        # frozen picture in the browser has three possible causes that look
+        # identical from there, and these two counters separate all three:
+        # frames leaving the camera but no RTP means the encoder or payloader
+        # stalled; neither moving means the source died; both still counting
+        # means the fault is the network or the browser, not this pipeline.
+        self.cam_frames = 0
+        self.rtp_packets = 0
+        self.rtp_bytes = 0
+        self.out_seen = (0, 0, 0)
+        self.stats_timer = 0
 
         overlay = OVERLAY if Gst.ElementFactory.find("textoverlay") else ""
         if not overlay:
             print("note: textoverlay is missing, so there is no clock to measure delay with")
 
-        video = SOURCE.format(pattern=opts.pattern) + overlay + ENCODERS[opts.encoder] + PAYLOAD
+        width, height = opts.size
+        if opts.video == "camera":
+            source = CAMERA.format(width=width, height=height, fps=opts.fps)
+        else:
+            source = TEST_SOURCE.format(
+                pattern=opts.pattern, width=width, height=height, fps=opts.fps
+            )
+
+        video = source + overlay + ENCODERS[opts.encoder] + PAYLOAD
         audio = ""
         if opts.audio != "none":
             audio = " " + AUDIO_SOURCES[opts.audio].format(device=opts.mic_device) + ENCODE_AUDIO
@@ -278,6 +441,37 @@ class Session:
         print(f"\npipeline:\n  {description}\n")
 
         self.pipeline = Gst.parse_launch(description)
+
+        # Pin the clock, or the camera and the microphone end up on two of them.
+        #
+        # alsasrc provides a clock and libcamerasrc does not, so with both in one
+        # pipeline GStreamer picks the sound card's clock. libcamerasrc goes on
+        # timestamping from the system monotonic clock regardless, so every video
+        # buffer reaches webrtcbin with a running time worked out by subtracting a
+        # base time in one clock's units from a timestamp in another's. The video
+        # branch then stalls within a second - the camera keeps producing 30 fps
+        # and nothing leaves the payloader - while audio, stamped against its own
+        # clock, runs perfectly and hides what is happening.
+        #
+        # videotestsrc never showed this because it paces itself off whichever
+        # clock the pipeline chose, so Steps 1-3 were immune by accident.
+        #
+        # The system clock costs the audio side nothing that matters: alsasrc
+        # timestamps against it instead, and the drift between the card's crystal
+        # and the system clock is what audioresample and the browser's jitter
+        # buffer already absorb.
+        self.pipeline.use_clock(Gst.SystemClock.obtain())
+
+        # Camera controls are properties, not pipeline syntax, and they have to
+        # be set before the element goes to PLAYING for the first frame to come
+        # out already in focus.
+        camera = self.pipeline.get_by_name("camera")
+        if camera is not None:
+            if opts.sensor_mode == "full":
+                set_sensor_mode(camera, FULL_FRAME_MODE)
+            if opts.focus != "default":
+                set_focus(camera, opts.focus)
+
         self.webrtc = self.pipeline.get_by_name("webrtc")
         self.webrtc.connect("on-negotiation-needed", self.on_negotiation_needed)
         self.webrtc.connect("on-ice-candidate", self.on_ice_candidate)
@@ -313,6 +507,8 @@ class Session:
             f"webrtc: {sending} transceiver(s) sending"
             + (", 1 receiving" if self.talkback else ", none receiving")
         )
+
+        self.watch_outgoing()
 
         self.clock = self.pipeline.get_by_name("clock")
         self.clock_timer = GLib.timeout_add(50, self.tick_clock) if self.clock else 0
@@ -428,7 +624,6 @@ class Session:
         # SSRC from the SDP, so the pad can exist before a single RTP packet
         # does. The probe counts what genuinely comes down it.
         pad.add_probe(Gst.PadProbeType.BUFFER, self.count_talkback)
-        self.talk_timer = GLib.timeout_add_seconds(2, self.report_talkback)
 
     def count_talkback(self, _pad, info):
         buffer = info.get_buffer()
@@ -437,6 +632,65 @@ class Session:
             self.talk_bytes += buffer.get_size()
         return Gst.PadProbeReturn.OK
 
+    # --- the way out -------------------------------------------------------
+
+    def watch_outgoing(self):
+        """Count raw frames out of the source and RTP packets into webrtcbin.
+
+        Neither number is available from webrtcbin without asking it for stats,
+        and by then a stall has already been invisible for however long it took
+        to notice. Probes cost a function call per buffer and answer the only
+        question a frozen picture raises: which end stopped.
+        """
+        source = self.pipeline.get_by_name("camera")
+        if source is not None:
+            pad = source.get_static_pad("src")
+            if pad is not None:
+                pad.add_probe(Gst.PadProbeType.BUFFER, self.count_frame)
+
+        payloader = self.pipeline.get_by_name("vpay")
+        if payloader is not None:
+            pad = payloader.get_static_pad("src")
+            if pad is not None:
+                pad.add_probe(Gst.PadProbeType.BUFFER, self.count_rtp)
+
+        self.stats_timer = GLib.timeout_add_seconds(2, self.report)
+
+    def count_frame(self, _pad, info):
+        if info.get_buffer() is not None:
+            self.cam_frames += 1
+        return Gst.PadProbeReturn.OK
+
+    def count_rtp(self, _pad, info):
+        buffer = info.get_buffer()
+        if buffer is not None:
+            self.rtp_packets += 1
+            self.rtp_bytes += buffer.get_size()
+        return Gst.PadProbeReturn.OK
+
+    def report(self):
+        self.report_video()
+        if self.speaker_bin is not None:
+            self.report_talkback()
+        return True
+
+    def report_video(self):
+        frames = self.cam_frames - self.out_seen[0]
+        packets = self.rtp_packets - self.out_seen[1]
+        kbits = (self.rtp_bytes - self.out_seen[2]) * 8 / 2000.0
+        self.out_seen = (self.cam_frames, self.rtp_packets, self.rtp_bytes)
+
+        # Reported per second, because a frame rate is the thing being judged
+        # and nobody thinks in frames per two seconds.
+        source = f"{frames / 2:.0f} fps from the source, " if self.cam_frames or frames else ""
+
+        if packets == 0 and frames == 0:
+            print("video: NOTHING - the source stopped producing frames")
+        elif packets == 0:
+            print(f"video: {source}but no RTP leaving - the encoder or payloader stalled")
+        else:
+            print(f"video: {source}{packets} RTP packets/2s ({kbits:.0f} kbit/s)")
+
     def report_talkback(self):
         packets = self.talk_packets - self.talk_seen[0]
         kbits = (self.talk_bytes - self.talk_seen[1]) * 8 / 2000.0
@@ -444,7 +698,7 @@ class Session:
 
         if packets == 0:
             print("talkback: nothing arriving - the browser is not sending")
-            return True
+            return
 
         if self.talk_level is None:
             loudness = ""
@@ -453,7 +707,6 @@ class Session:
         else:
             loudness = f", {self.talk_level:.0f} dBFS"
         print(f"talkback: {packets} packets/2s ({kbits:.0f} kbit/s){loudness}")
-        return True
 
     # --- what it is doing -------------------------------------------------
 
@@ -477,6 +730,12 @@ class Session:
                 print("        The speaker would not open. An ALSA hw: device goes to one")
                 print("        process at a time, so something else may hold it. Or send")
                 print("        the voice elsewhere:  --speaker-device hw:CARD=Headphones")
+            if where == "camera":
+                print("        The camera would not open. Like an ALSA hw: device it goes to")
+                print("        one process at a time, so rpicam-hello or a second copy of")
+                print("        this script will hold it. If it was never detected at all the")
+                print("        ribbon or config.txt is the cause:  ./check-camera.sh")
+                print("        To carry on without the camera meanwhile:  --video test")
             if where == "mic":
                 print("        The microphone would not open. If this is 'Invalid argument'")
                 print("        it is the known WM8960 fault: Waveshare's out-of-tree modules")
@@ -505,8 +764,8 @@ class Session:
     def close(self):
         if self.clock_timer:
             GLib.source_remove(self.clock_timer)
-        if self.talk_timer:
-            GLib.source_remove(self.talk_timer)
+        if self.stats_timer:
+            GLib.source_remove(self.stats_timer)
         self.pipeline.set_state(Gst.State.NULL)
 
 
@@ -607,6 +866,41 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("server", help="the machine running server.js, as IP or IP:PORT")
     parser.add_argument(
+        "--video",
+        choices=("camera", "test"),
+        default="camera",
+        help="camera is the real one through libcamera; test is videotestsrc, Steps 1-3",
+    )
+    parser.add_argument(
+        "--size",
+        type=parse_size,
+        default=None,
+        metavar="WIDTHxHEIGHT",
+        help=f"picture size (camera {CAMERA_SIZE}, test {TEST_SIZE}; the imx708 is"
+        " 16:9, so asking it for 4:3 crops the sides off)",
+    )
+    parser.add_argument(
+        "--fps",
+        type=int,
+        default=DEFAULT_FPS,
+        help=f"frames per second (default {DEFAULT_FPS})",
+    )
+    parser.add_argument(
+        "--focus",
+        type=parse_focus,
+        default="continuous",
+        metavar="MODE",
+        help="continuous, default (leave libcamera alone), or a distance in metres."
+        " Not optional in practice: af-mode defaults to manual at infinity",
+    )
+    parser.add_argument(
+        "--sensor-mode",
+        choices=("full", "auto"),
+        default="full",
+        help="full reads the whole sensor and keeps the wide lens wide; auto lets"
+        " libcamera choose, which crops to the centre 2/3 at small sizes",
+    )
+    parser.add_argument(
         "--encoder",
         choices=sorted(ENCODERS),
         default="x264",
@@ -637,16 +931,27 @@ def main():
     parser.add_argument(
         "--pattern",
         default="ball",
-        help="videotestsrc pattern: ball is a dot on black, smpte is colour bars",
+        help="--video test only: ball is a dot on black, smpte is colour bars",
     )
     args = parser.parse_args()
+
+    # Resolved here rather than as an argparse default, because the default
+    # depends on which source was chosen.
+    if args.size is None:
+        args.size = parse_size(CAMERA_SIZE if args.video == "camera" else TEST_SIZE)
 
     server = args.server if ":" in args.server else f"{args.server}:3000"
 
     Gst.init(None)
     require("webrtcbin", "install gstreamer1.0-plugins-bad")
     require("rtph264pay", "install gstreamer1.0-plugins-good")
-    require("videotestsrc", "install gstreamer1.0-plugins-base")
+    if args.video == "camera":
+        require(
+            "libcamerasrc",
+            "install gstreamer1.0-libcamera, then ./check-camera.sh; or use --video test",
+        )
+    else:
+        require("videotestsrc", "install gstreamer1.0-plugins-base")
     if args.encoder == "x264":
         require("x264enc", "install gstreamer1.0-plugins-ugly, or use --encoder v4l2")
     else:
@@ -670,10 +975,21 @@ def main():
         "alsa": f"microphone {args.mic_device}",
     }[args.audio]
 
+    width, height = args.size
+    picture = "the camera" if args.video == "camera" else f"videotestsrc {args.pattern}"
+
     client = Client(f"ws://{server}/ws", args)
     client.start()
 
-    print(f"pi webrtc: {args.encoder} encoder, {sound}")
+    print(f"pi webrtc: {picture} at {width}x{height}@{args.fps}, {args.encoder} encoder, {sound}")
+
+    # x264enc on a Cortex-A72 is fine at 640x360 and marginal above it. When it
+    # cannot keep up the queue leaks, so the symptom is a jerky picture rather
+    # than a growing delay - which hides the cause unless it is said here.
+    if args.encoder == "x264" and width * height > 640 * 480:
+        print(f"           NOTE: {width}x{height} in software may drop frames; --encoder v4l2")
+        print("           is the Pi 4's hardware encoder and costs no CPU at all")
+
     if args.no_talkback:
         print("           no talkback - the browser is not asked for its microphone")
     else:

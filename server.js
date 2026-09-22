@@ -21,7 +21,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 // So the Pi can fetch its scripts: curl -fO http://SERVER_IP:3000/webrtc-video.py
 // Add any new Pi script to this list or it cannot be fetched.
 for (const script of [
-  'check-audio.sh', 'fix-wm8960.sh', 'webrtc-video.py', 'server-bridge.py', 'upload-clip.py',
+  'check-audio.sh', 'check-camera.sh', 'fix-wm8960.sh',
+  'webrtc-video.py', 'server-bridge.py', 'upload-clip.py',
 ]) {
   app.get(`/${script}`, (req, res) =>
     res.type('text/plain').sendFile(path.join(__dirname, 'pi', script))
