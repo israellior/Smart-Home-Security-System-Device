@@ -557,6 +557,9 @@ server.js               Express + ws. Static files and the signaling switchboard
 public/webrtc.html      Steps 1-3: RTCPeerConnection, video + Opus both ways, a
                         level meter per direction, mute, live stats with A/V skew.
                         Warns when it is not a secure context.
+public/porchlightd.tar.gz   Not tracked. `git archive` output, so the Pi can curl
+                        the daemon's source - it has no clone. Stale by default:
+                        regenerate it after every change. See Conventions.
 pi/webrtc-video.py      Steps 1-3 and 5: a camera -> H.264 and a mic -> Opus out, the
                         browser's mic -> alsasink back, all on one webrtcbin, plus
                         signaling. The name is stale; it is the whole Pi client now.
@@ -690,6 +693,26 @@ the card before a test that touches it.
 - **Scripts reach the Pi by `curl` from the server**, never by paste — an indented
   heredoc terminator silently breaks a pasted script. Files here use LF endings; if
   one ever arrives with CRLF, `sed -i 's/\r$//'`.
+- **`porchlightd`'s source reaches the Pi the same way, as a tarball.** There is no
+  git clone on the Pi, so `git pull` there is not a thing — it fetches an archive
+  from `public/`, which express already serves statically. **Regenerate it after
+  every change or the Pi silently builds yesterday's code**, which is exactly what
+  happened on 2026-09-22:
+
+  ```bash
+  git archive --format=tar.gz --prefix=porchlightd/ HEAD:porchlightd \
+    -o public/porchlightd.tar.gz
+  ```
+
+  ```bash
+  cd ~ && curl -fO http://192.168.0.219:3000/porchlightd.tar.gz
+  tar xzf porchlightd.tar.gz && cd porchlightd
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j4
+  ctest --test-dir build --output-on-failure
+  ```
+
+  `git archive` takes only tracked files, so the `build*/` directories and their
+  vendored GoogleTest never go near it. The tarball is gitignored.
 - Node 24, so the global `WebSocket` is available in `tools/signal-test.js`.
 
 ## Keeping this file current
