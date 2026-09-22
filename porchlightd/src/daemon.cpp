@@ -77,7 +77,7 @@ void Daemon::execute(const Action& action) {
                  [&](const SendAlert& a) { hardware_.server->send_alert(a); },
                  [&](const StartRecording& a) { hardware_.recorder->start(a.event_id, a.seconds); },
                  [&](const StopRecording&) { hardware_.recorder->stop(); },
-                 [&](const UploadClip& a) { hardware_.uploader->upload(a.event_id, a.path); },
+                 [&](const UploadClip& a) { hardware_.uploader->upload(a); },
                  [&](const DiscardClip& a) { hardware_.uploader->discard(a.event_id, a.path); },
                  [&](const StartCall& a) { hardware_.media->start_call(a.peer); },
                  [&](const StopCall&) { hardware_.media->stop_call(); },

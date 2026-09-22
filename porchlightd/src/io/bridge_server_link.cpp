@@ -18,15 +18,6 @@ namespace {
 
 using nlohmann::json;
 
-// The core keeps deadlines on the steady clock, but the server wants to know
-// when the sensor fired in wall-clock terms. Converting at send time is what
-// lets an alert held through an outage still report the right moment.
-std::string wall_clock_of(TimePoint steady_point) {
-  const auto offset = steady_point - Clock::now();
-  return iso8601(std::chrono::system_clock::now() +
-                 std::chrono::duration_cast<std::chrono::system_clock::duration>(offset));
-}
-
 }  // namespace
 
 BridgeServerLink::BridgeServerLink(Reactor& reactor, EventSink sink, ServerConfig config,
@@ -84,7 +75,7 @@ void BridgeServerLink::send_alert(const SendAlert& alert) {
       {"type", "event"},
       {"eventId", alert.event_id},
       {"kind", to_string(alert.kind)},
-      {"at", wall_clock_of(alert.triggered_at)},
+      {"at", iso8601_of(alert.triggered_at)},
   };
   const std::string line = frame.dump() + "\n";
 

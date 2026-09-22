@@ -17,6 +17,72 @@ TEST(Recording, AGoodClipIsUploaded) {
   EXPECT_EQ(count<DiscardClip>(out), 0);
 }
 
+TEST(Recording, AnUploadCarriesEverythingTheConfirmNeeds) {
+  Harness h;
+  h.go_online();
+  const TimePoint fired = h.now();
+  h.send(MotionDetected{});
+
+  const auto out = h.after(10s, good_clip("evt-1", 9500ms));
+
+  const UploadClip* clip = find<UploadClip>(out);
+  ASSERT_NE(clip, nullptr);
+  EXPECT_EQ(clip->kind, Kind::Motion);
+  // When the sensor fired, not when the recorder finished ten seconds later.
+  EXPECT_EQ(clip->triggered_at, fired);
+  EXPECT_EQ(clip->duration, 9500ms);
+  EXPECT_FALSE(clip->partial);
+}
+
+TEST(Recording, AnUpgradedEventUploadsAsARingFromWhenTheMotionFired) {
+  Harness h;
+  h.go_online();
+  const TimePoint fired = h.now();
+  h.send(MotionDetected{});
+  h.after(2s, ButtonPressed{});
+
+  const auto out = h.after(8s, good_clip("evt-1"));
+
+  const UploadClip* clip = find<UploadClip>(out);
+  ASSERT_NE(clip, nullptr);
+  EXPECT_EQ(clip->kind, Kind::Ring);
+  // The press raises the kind but not the time: the clip still begins where
+  // the motion did, and its first frame is from then.
+  EXPECT_EQ(clip->triggered_at, fired);
+}
+
+TEST(Recording, AClipAViewerCutShortIsMarkedPartial) {
+  Harness h;
+  h.go_online();
+  h.send(MotionDetected{});
+
+  const auto stopped = h.after(3s, ViewerRequested{"viewer-1"});
+  ASSERT_EQ(count<StopRecording>(stopped), 1);
+
+  // The upload waits for the call to end, so the flag has to outlive both the
+  // recording and the viewer that ended it.
+  h.after(1s, good_clip("evt-1", 4s));
+  const auto out = h.send(CallEnded{"viewer-1", "closed the tab"});
+
+  const UploadClip* clip = find<UploadClip>(out);
+  ASSERT_NE(clip, nullptr);
+  EXPECT_TRUE(clip->partial);
+  EXPECT_EQ(clip->duration, 4s);
+}
+
+TEST(Recording, AClipTheCoreCannotDescribeIsDiscarded) {
+  Harness h;
+  h.go_online();
+
+  // Nothing here started evt-9, so there is no kind and no trigger time to
+  // confirm it with, and a wrong row is worse than no row.
+  const auto out = h.send(good_clip("evt-9"));
+
+  EXPECT_EQ(count<UploadClip>(out), 0);
+  ASSERT_NE(find<DiscardClip>(out), nullptr);
+  EXPECT_EQ(find<DiscardClip>(out)->event_id, "evt-9");
+}
+
 TEST(Recording, AClipShorterThanTheMinimumIsDiscarded) {
   Harness h;
   h.go_online();

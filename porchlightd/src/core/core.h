@@ -37,12 +37,18 @@ class Core {
   struct ActiveEvent {
     EventId id;
     Kind kind = Kind::Motion;
+    // Kept because the clip has to report it long after the recording ends,
+    // and by then the alert that carried it may already have been sent.
+    TimePoint triggered_at;
+    // Set when the core asks the recorder to stop before its time is up. The
+    // fact is causal rather than measured: comparing the finished duration
+    // against the requested one would only ever be a guess, since a clip
+    // always comes back a little short of what was asked for.
+    bool cut_short = false;
   };
 
-  struct PendingUpload {
-    EventId event_id;
-    std::string path;
-  };
+  // A clip on disk with everything needed to describe it, waiting its turn.
+  using PendingUpload = UploadClip;
 
   void on_button(TimePoint now, std::vector<Action>& out);
   void on_motion(TimePoint now, std::vector<Action>& out);

@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "core/actions.h"
 #include "core/types.h"
 
 namespace porch {
@@ -15,8 +16,12 @@ class ClipUploader {
  public:
   virtual ~ClipUploader() = default;
 
+  // Takes the whole action rather than a path: the confirm at the end of the
+  // upload has to state the kind, the trigger time, the duration and whether a
+  // viewer cut it short, and the core is the only thing that knows them.
+  //
   // Must answer with an UploadFinished event, or the clip is never retried.
-  virtual void upload(const EventId& event_id, const std::string& path) = 0;
+  virtual void upload(const UploadClip& clip) = 0;
 
   // Nothing is coming back for this one: the clip is simply gone.
   virtual void discard(const EventId& event_id, const std::string& path) = 0;

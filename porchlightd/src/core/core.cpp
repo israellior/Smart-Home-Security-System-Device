@@ -108,7 +108,9 @@ void Core::on_button(TimePoint now, std::vector<Action>& out) {
   if (recording_ == RecordingState::Active && recording_event_) {
     if (recording_event_->kind == Kind::Motion) {
       // The same event becomes a ring. One id, one clip, one row on the
-      // server, notified as a ring because somebody is at the door.
+      // server, notified as a ring because somebody is at the door. The
+      // trigger time is not raised with it: the clip still starts where the
+      // motion did, which is the moment its first frame shows.
       recording_event_->kind = Kind::Ring;
       alerts_.push({recording_event_->id, Kind::Ring, now});
       pump_alerts(now, out);
@@ -126,6 +128,9 @@ void Core::on_viewer(const ViewerRequested& event, std::vector<Action>& out) {
   if (recording_ == RecordingState::Active) {
     out.push_back(StopRecording{});
     recording_ = RecordingState::Stopping;
+    if (recording_event_) {
+      recording_event_->cut_short = true;  // whatever comes back is not a full clip
+    }
     deferred_call_ = event.peer;
     return;  // StartCall waits for RecordingFinished, not for StopRecording
   }
@@ -144,13 +149,20 @@ void Core::on_call_ended(const CallEnded& event) {
 }
 
 void Core::on_recording_finished(const RecordingFinished& event, std::vector<Action>& out) {
+  const std::optional<ActiveEvent> described = recording_event_;
   recording_ = RecordingState::Idle;
   recording_event_.reset();
 
+  // The kind and the trigger time live only here, and the confirm at the end of
+  // the upload has to state both. A clip that cannot be described truthfully is
+  // worse than one the server never receives, so it goes rather than being sent
+  // under a guessed time. It takes a RecordingFinished this core did not start.
+  const bool describable = described && described->id == event.event_id;
   const bool worth_keeping =
-      event.ok && event.bytes > 0 && event.duration >= policy_.min_clip;
+      event.ok && event.bytes > 0 && event.duration >= policy_.min_clip && describable;
   if (worth_keeping) {
-    uploads_.push_back({event.event_id, event.path});
+    uploads_.push_back(UploadClip{event.event_id, event.path, described->kind,
+                                  described->triggered_at, event.duration, described->cut_short});
   } else if (!event.path.empty()) {
     out.push_back(DiscardClip{event.event_id, event.path});
   }
@@ -189,6 +201,9 @@ void Core::on_shutdown(std::vector<Action>& out) {
   if (recording_ == RecordingState::Active) {
     out.push_back(StopRecording{});
     recording_ = RecordingState::Stopping;
+    if (recording_event_) {
+      recording_event_->cut_short = true;
+    }
   }
   if (!viewers_.empty()) {
     out.push_back(StopCall{});
@@ -211,7 +226,7 @@ void Core::trigger(Kind kind, TimePoint now, bool with_clip, std::vector<Action>
   }
   out.push_back(StartRecording{id, policy_.clip});
   recording_ = RecordingState::Active;
-  recording_event_ = ActiveEvent{id, kind};
+  recording_event_ = ActiveEvent{id, kind, now};
 }
 
 void Core::start_call(const PeerId& peer, std::vector<Action>& out) {
@@ -246,7 +261,7 @@ void Core::pump_uploads(TimePoint now, std::vector<Action>& out) {
     return;
   }
   upload_in_flight_ = true;
-  out.push_back(UploadClip{uploads_.front().event_id, uploads_.front().path});
+  out.push_back(uploads_.front());
 }
 
 LedPattern Core::desired_led() const {
