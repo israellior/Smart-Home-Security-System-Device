@@ -4,8 +4,13 @@ The device-side control daemon for Porchlight. It decides what the doorbell
 does — chime, alert, record, call — and carries none of the media itself.
 
 The live call is a **separate program**, `webrtc-video.py`, with its own
-WebSocket and its own pipeline. This daemon only asks it to start and stop.
-Neither that script nor `server.js` is modified by this project.
+pipeline. This daemon starts it and learns that it stopped, and that is the
+whole interface — there is no socket between them and nothing to say on one.
+
+It no longer has a WebSocket of its own either. The call publishes to LiveKit,
+so the script fetches its own short-lived tokens with the device credential and
+negotiates with LiveKit directly. **This daemon's socket is the only one the
+device holds**, and it signs in as `role: "device"`.
 
 ## Where we are
 
@@ -19,12 +24,13 @@ Each step adds exactly one thing that can break.
 | 3 | Fake backends, so the whole flow runs from the keyboard | **done** |
 
 Verified on both machines: WSL2 GCC 13.3 and the Pi's GCC 14.2, Debug and
-Release, 0 warnings — 48/48 each when the Pi last ran them, 65/65 on WSL since
-the camera work. There are two test binaries now: `core_tests` links only
-`porchlight_core`, which is what keeps "no I/O in the core" true rather than
-merely intended, and `runtime_tests` reaches into `porchlight_runtime` to check
-the GStreamer command line the recorder builds — a string, so it needs no
-camera, no sound card and no Pi. Build Release before believing a clean build —
+Release, 0 warnings — 48/48 each when the Pi last ran them, **83/83 on WSL**
+since the live call went in. There are two test binaries: `core_tests` links
+only `porchlight_core`, which is what keeps "no I/O in the core" true rather
+than merely intended, and `runtime_tests` reaches into `porchlight_runtime` to
+check the GStreamer command line the recorder builds and the argv the daemon
+runs a call with — both strings, so neither needs a camera, a sound card, a
+network or a Pi. Build Release before believing a clean build —
 `-Wmaybe-uninitialized` does nothing at `-O0`, and that hid 22 reports for a
 while.
 
@@ -50,7 +56,29 @@ gave it away, which is why the child's output is not redirected.
 | 6 | Clips: sidecar, real upload, spool cap | **done, against a stub** |
 | 7 | The same against the real `/api/clips/...` | next, and not ours alone |
 | — | Camera: real footage in the clips | **done 2026-09-22** |
-| — | LED, button, PIR | waiting on parts |
+| — | Media: `viewer-requested` really starts a call | **done 2026-09-22, untested on hardware** |
+| — | LED, button, PIR | **written 2026-09-23 — never run on the Pi** |
+
+**The live call (2026-09-22).** `backends.media: "script"` runs
+`webrtc-video.py` as a child process on `StartCall`, watched through a pidfd
+exactly as the recorder and the uploader are. Three things about it are rules
+rather than details, and all three are asserted in
+[`tests/media_test.cpp`](tests/media_test.cpp):
+
+- **The interpreter is configurable and the script is not exec'd directly.**
+  The LiveKit SDK is a pip package and `python3-gi` is an apt one, so the call
+  runs under a venv built with `--system-site-packages`. A shebang would find
+  the system python and die on `from livekit import rtc`.
+- **The credential travels as a path, never as a value.** Arguments are
+  world-readable in `/proc`.
+- **One process serves every viewer.** A second `viewer-requested` while it is
+  running is nothing to act on: the Pi publishes one stream and LiveKit copies
+  it out.
+
+The call ends by itself — it is the half that can see who is in the room — and
+the process exiting is the only thing this side ever observes. Every viewer it
+was started for gets one `CallEnded` then, because a viewer left in the core's
+set keeps the LED on `live` and holds back every clip upload.
 
 **The camera (2026-09-22).** `recorder.video_source: "libcamera"` now records a
 real Camera Module 3 Wide instead of `videotestsrc`, and the example config is
@@ -85,9 +113,8 @@ a bare `libcamerasrc ! videoconvert ! v4l2h264enc ! fakesink` produces nothing,
 where `x264enc` runs at 30 fps. Not yet investigated; `x264` is the tested path
 with the camera.
 
-Out of scope for now: libgpiod, the kernel driver, the real server protocol,
-changes to the media script, pre-roll recording, multi-viewer relay, first-boot
-provisioning.
+Out of scope for now: libgpiod, the kernel driver, pre-roll recording,
+first-boot provisioning.
 
 ## Build
 
@@ -194,8 +221,13 @@ sudo mkdir -p /usr/local/lib/porchlight /etc/porchlight
 sudo install -m 0755 ../pi/server-bridge.py ../pi/upload-clip.py /usr/local/lib/porchlight/
 
 sudo cp porchlightd.example.json /etc/porchlight/porchlightd.json
-sudo nano /etc/porchlight/porchlightd.json      # set server.base_url
+sudo nano /etc/porchlight/porchlightd.json      # set server.base_url, and
+                                                # backends.input/led to "gpio"
 ```
+
+The example config still ships `input: "stdin"` and `led: "console"`, because
+they are what a binary built without `-DPORCHLIGHT_GPIO=ON` can run. The pin
+numbers in its `gpio` block are the real ones.
 
 **The credential is typed onto the device and lives nowhere else.** It is not
 in this repository, it is not fetched over HTTP, and the server keeps only a
@@ -219,18 +251,22 @@ before starting anything:
 That prints the device's name and location straight from the server, and proves
 the credential, the URL and the network in one call without opening a socket.
 
-**Two traps in the systemd unit, and they are the reason it is not enabled yet.**
+**Two traps in the systemd unit.**
 
 The unit runs as `User=porchlight`, so a credential at `0600` owned by anyone
 else is unreadable and the daemon fails with a permission error rather than an
 authentication one. `chown porchlight` it when the unit is what starts the
 daemon, and `chown` it to yourself while you are running it by hand.
 
-More importantly, the unit sets `StandardInput=null`, and `backends.input` has
-exactly one implementation — `stdin`. **Under systemd the daemon would start,
-connect, and never see an event**, because nothing can type at it and the GPIO
-backend does not exist. Until the button and the PIR are wired, run it in a
-terminal:
+Second, the unit sets `StandardInput=null`, so a unit left on
+`backends.input: "stdin"` would **start, connect, and never see an event** —
+nothing can type at it. Set `input` and `led` to `"gpio"` before enabling it,
+and build the binary with `-DPORCHLIGHT_GPIO=ON` or it will refuse to start
+and say which. The unit already grants `SupplementaryGroups=audio video gpio`,
+which is what lets `porchlight` open `/dev/gpiochip0`.
+
+To run it in a terminal instead — which is still how the fake backends are
+driven:
 
 ```bash
 /usr/local/bin/porchlightd /etc/porchlight/porchlightd.json
@@ -333,29 +369,108 @@ Two things follow from one sound card. The chime **cannot** play while a call
 holds the speaker, and because a button press starts a recording at the same
 moment, the chime ends up **inside** every ring clip.
 
-## When the hardware arrives
+## The button, the PIR and the LED
 
 Everything sits behind an interface, and one file chooses the implementation:
 [`src/backends.cpp`](src/backends.cpp). Adding a real backend is a branch there
-and a line of JSON. **No core change, no test change**, and the fake stays
-available to fall back to when something misbehaves at 11pm.
+and a line of JSON. **No core change**, and the fake stays available to fall
+back to when something misbehaves at 11pm.
 
-| Part | Config change | New files |
+| Part | Config change | Files |
 |---|---|---|
-| LED | `backends.led: "gpio"` | `io/gpio_led.*` |
-| Button + PIR | `backends.input: "gpio"` | `io/gpio_input.*`, `io/debounce.h` |
+| LED | `backends.led: "gpio"` | **written 2026-09-23** — `io/gpio_led.*`, `io/led_patterns.h` |
+| Button + PIR | `backends.input: "gpio"` | **written 2026-09-23** — `io/gpio_input.*` |
 | Camera | `recorder.video_source: "libcamera"` | **done** — see "The camera" above |
 | Real recorder | `backends.recorder: "gstreamer"` | step 4 |
+| Live call | `backends.media: "script"` | **done** — `io/script_media.*` |
 
 An unknown backend name is a startup error naming the key, never a silent
-default.
+default — and `"gpio"` in a binary built without it gets a *different* error
+saying so, because reading "not compiled in" as "misspelt" costs an hour.
 
-libgpiod backends will be behind a CMake option (`PORCHLIGHT_GPIO`), off on
-WSL2, so the development machine never needs a dependency it cannot use.
+**Nothing here has run on a Pi.** It is written against libgpiod 2.2's real
+header and compiles clean under `-Wall -Wextra -Wpedantic -Wshadow`, which
+proves the API and nothing about the wiring.
 
-Before wiring anything: check the PIR's output voltage is 3.3 V, and run
-`gpioinfo` to get the real line numbers — do not trust the defaults in the
-example config.
+### Building it
+
+The backends are behind a CMake option, **off by default**, so the Windows and
+WSL2 development machines never need a dependency they cannot use:
+
+```bash
+sudo apt install -y libgpiod-dev          # must be 2.x
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPORCHLIGHT_GPIO=ON
+```
+
+**libgpiod 1.x will not do**, and the likely failure is not "missing" but
+"found 1.6": its C API is an unrelated one. Debian 13 trixie, which the Pi
+runs, has 2.x; Debian 12 and Ubuntu 24.04 both still ship 1.6.3. CMake says
+which it found rather than leaving pkg-config to word it.
+
+### The wiring, as built
+
+BCM numbering, and confirmed against `gpioinfo` rather than assumed. They
+avoid GPIO 2–3 and 18–21, which the WM8960 HAT holds for its control I²C and
+its I²S.
+
+| Line | Part | Rests | Bias |
+|---|---|---|---|
+| 24 | button | high | the Pi's internal **pull-up** — there is no resistor on the switch |
+| 23 | PIR (AM312) | low | **disabled** — the AM312 drives both ways and a pull would fight it |
+| 25 | LED | off | output, straight into a series resistor and on to ground |
+
+**Both inputs are read as asserted on a *rising* edge**, and the wiring is
+reconciled by `active_low` per line rather than by picking a different edge for
+each. That is not a guess about the kernel: `linux/gpio.h` defines the v2 edge
+flags logically — `EDGE_RISING` is "rising (**inactive to active**) edges" —
+and `ACTIVE_LOW` as "line active state is physical low". So with
+`button_active_low`, the switch's physical fall to ground *is* the rising edge.
+Get it backwards and the doorbell rings on release, which reads as a laggy
+button rather than as a polarity mistake.
+
+`button_active_low`, `motion_active_low` and `led_active_low` are all config,
+so re-wiring any of the three is a JSON change and not a rebuild.
+
+**Debounce is the kernel's**, asked for through the line request
+(`debounce_ms`, applied to the button alone — a PIR has nothing to bounce).
+That is why the `io/debounce.h` the plan called for was never written: the v2
+uAPI debounces in the kernel, and a userspace copy would only add latency and
+a second thing to be wrong.
+
+Both lines go into **one request and therefore one descriptor** — the kernel
+queues edges from both and stamps each with the line it came from, so the
+reactor watches a single thing. Both are requested with `EDGE_BOTH` even
+though only the rising edge raises an event: the release is what makes a hold
+*measurable*, and `input: motion released after 2.31s` at debug level is how
+you confirm an AM312 rather than infer it. A press with no release means the
+line is inverted.
+
+### What the LED does
+
+One colour and no PWM, so six states have to be told apart by rate and shape
+alone. The table is [`io/led_patterns.h`](src/io/led_patterns.h), kept free of
+libgpiod precisely so the tests can check it on a machine with no GPIO:
+
+| Pattern | Blink |
+|---|---|
+| Ring | 125 ms on, 125 ms off — 4 Hz |
+| Live | solid |
+| Recording | 1 s on, 1 s off |
+| Offline | two 120 ms flashes, then dark for 1.64 s |
+| Idle, Off | dark |
+
+Ring against Recording is the pair that costs most to confuse — someone is at
+the door, against the camera is running — so a test asserts the factor of four
+between them. Offline is a *shape* rather than a rate so it cannot be misread
+as a slow version of either.
+
+The core emits `SetLed` only when the pattern **changes**, so everything that
+blinks is kept going by the backend: `GpioLed` owns a timer of its own, the
+reactor's single one belonging to the core. It restarts at the first phase on
+every change, so a ring always begins lit — a pattern that began dark would
+look like a dropped press. And the destructor drives the line low before
+releasing it, because a released line keeps its last level and a daemon stopped
+mid-call would otherwise leave the porch lit for good.
 
 ## The layout
 
@@ -363,7 +478,7 @@ example config.
 src/core/        the rules. No I/O, ever. What the tests exercise.
 src/io/          one interface per thing in the world, plus today's fakes.
 src/             the machinery: reactor, config, logging, daemon wiring.
-tests/           48 unit tests, no hardware and no GStreamer needed.
+tests/           83 unit tests: no hardware, no GStreamer, no GPIO, no Pi.
 docs/            decisions that outlive the code that implements them.
 systemd/         the unit file.
 ```
@@ -371,8 +486,9 @@ systemd/         the unit file.
 Two documents are worth reading before changing anything:
 
 - [docs/protocol.md](docs/protocol.md) — the alert shape, the `(eventId, kind)`
-  dedupe that makes the ring upgrade expressible, and why this daemon must
-  never sign in to the signaling server as `role: 'pi'`.
+  dedupe that makes the ring upgrade expressible, and what `viewer-requested`
+  does now that there is no SDP on the socket and no second socket to collide
+  with.
 - [docs/hardware-notes.md](docs/hardware-notes.md) — the two constraints the
   fakes hide, which will only ever fail on the Pi.
 

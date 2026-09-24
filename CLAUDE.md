@@ -3,20 +3,35 @@
 Working notes for this project. Read this first; update it at the end of any session
 that changes something here. Last updated 2026-09-22.
 
-**Also read [DESIGN.md](DESIGN.md).** This file describes the present. That one
-describes how the finished system is meant to work — remote access, auth tokens,
-an SFU, 1–5 viewers per Pi — and those decisions are settled. The five-step plan
-below still stands; what changes is what happens after it.
+**Also read [DESIGN.md](DESIGN.md)** and
+[docs/server-brief.md](docs/server-brief.md). This file describes the present.
+DESIGN.md describes how the finished system is meant to work — remote access,
+auth tokens, an SFU, 1–5 viewers per Pi — and those decisions are settled. The
+brief is the contract with the app server, and **where this file and that one
+disagree, that one wins**.
+
+The five-step plan below is finished. What replaced it is a doorbell whose call
+publishes to LiveKit Cloud, and the single most important thing to know is that
+**none of the LiveKit work has run on the Pi yet** — see "Read this first".
 
 ## What this is
 
-A learning project, not production software. The goal is to replace a working but
-crude PCM-over-HTTP intercom with real WebRTC, and then — once it works — to open
-the boxes and rewrite the interesting layers (RTP, the jitter buffer, V4L2 capture,
-signaling) by hand.
+A learning project, not production software. It began as a crude PCM-over-HTTP
+intercom, became a hand-negotiated WebRTC call between one browser and the Pi,
+and is now a doorbell: `porchlightd` decides what the device does, and the live
+call publishes to **LiveKit Cloud** so that it works from anywhere rather than
+across one LAN.
 
-Browser and Pi exchange SDP and ICE over a WebSocket, then send RTP directly to
-each other. The server carries no media.
+The Pi and the viewers both connect *outward* to LiveKit, so no home router has
+to accept an incoming connection and no TURN relay is needed. The app server
+mints tokens and is never in the media path.
+
+Phase 2 — opening the boxes and rewriting RTP, the jitter buffer, V4L2 capture
+and signaling by hand — is still the point of the exercise. Moving to LiveKit
+moved it further away rather than cancelling it: there is no `webrtcbin` in the
+tree any more, and what replaced it hides more, not less. What that code taught
+is under "What the webrtcbin version taught" below, and the code itself is in
+the git history.
 
 **The original PCM intercom was deleted on 2026-09-19.** It streamed raw 16-bit
 LE PCM over plain HTTP — `arecord | curl` → `POST /stream` → WebSocket → Web
@@ -32,164 +47,176 @@ else — there is still no git repository (open problem 2).
 
 ## Where we are
 
-Following a five-step plan. Each step adds exactly one thing that can break.
+The five-step plan below is finished, and then the ground moved: the call does
+not negotiate with a browser any more. It publishes to **LiveKit Cloud**, and
+the viewer is the app rather than `public/webrtc.html`.
 
 | Step | What | Status |
 |---|---|---|
 | 0 | Read the existing project | **done** |
 | — | Install GStreamer on the Pi, verify hardware | **done** |
-| 1 | Video only, `videotestsrc`, Pi → browser | **done, working end to end** |
-| 2 | Add the Pi's microphone (Opus) | **done** |
-| 3 | Add browser mic → Pi speaker | **done — it is a call** |
-| 4 | Echo cancellation (`webrtcdsp`) | **next, and the only step left** |
+| 1 | Video only, `videotestsrc`, Pi → browser | **done**, and since replaced |
+| 2 | Add the Pi's microphone (Opus) | **done**, and since replaced |
+| 3 | Add browser mic → Pi speaker | **done** — it was a call |
 | 5 | Swap `videotestsrc` for `libcamerasrc` | **done 2026-09-22 — a real camera** |
+| 4 | Echo cancellation (`webrtcdsp`) | **written 2026-09-22 — never run on the Pi** |
+| — | The call publishes to LiveKit | **written 2026-09-22 — never run on the Pi** |
+| — | `porchlightd` starts the call for real | **written 2026-09-22 — never run on the Pi** |
+| — | The button, the PIR and the LED on real GPIO | **written 2026-09-23 — never run on the Pi** |
 
-Then Phase 2: print the SDP, hand-write RTP packetisation, hand-write a jitter
-buffer, drive V4L2 directly (`/dev/video0`, then the encoder at `/dev/video11`).
+### Read this first: nothing after Step 5 has run on hardware
 
-**Step 1 result (2026-09-18):** ICE reached `completed`, connection `connected`,
-video decoding in the browser with the Pi's clock overlay visible. Measured delay
-**≈ 150 ms** with the software encoder at 640×480/30. Host-to-host candidates, so
-the media goes straight between the two machines and never through `server.js`.
-The hardware encoder (`--encoder v4l2`) has still not been made to work: it
-stalls outright with `libcamerasrc` (see Step 5).
+Steps 1–3 and 5 were confirmed on the real Pi. Everything after them — the
+LiveKit rewrite of `webrtc-video.py`, echo cancellation, `porchlightd`'s
+`script` media backend, and now its `gpio` input and LED backends — was written
+on the Windows host and **has never run on the Pi**. Do not read the confident
+tone of the sections below as evidence.
 
-**Step 2 (2026-09-18):** a second track was added to the *same* `webrtcbin`, not a
-second connection — one transport, one pipeline clock, one set of RTCP sender
-reports, which is what will hold sound and picture together at Step 5. Audio path
-is `alsasrc → audioconvert → audioresample → 48 kHz mono → opusenc → rtpopuspay
-→ webrtc.`, payload type **97** (video already owns 96).
+What *was* verified, and how:
 
-`--audio` chooses the source and defaults to **`alsa`**, the real microphone —
-that is the point of the step. `--audio test` substitutes a once-a-second tick from
-`audiotestsrc`, which proves everything downstream of the card (negotiation, Opus,
-the second track) while the HAT is down. `--audio none` reproduces Step 1 exactly,
-for bisecting. If the mic will not open, the pipeline error names `fix-wm8960.sh`.
+| Verified | How |
+|---|---|
+| Both token endpoints, and exactly what their claims grant | POSTed to the live app server on `localhost:4000` |
+| A rejected credential is permanent; an unreachable server is not | same, both paths exercised |
+| The LiveKit SDK's real API surface | installed `livekit` 1.1.19 on the dev host and read it |
+| That the SDK takes the *address* of a video buffer rather than copying it | read `_utils.get_address` — which is why frames are copied with `bytes()` |
+| `build_media_command`, the config reader, the I420 size rule | `ctest`, 83 passing |
+| The LED blink table | `ctest` — it is deliberately free of libgpiod so it can be |
+| That the GPIO code matches libgpiod's real v2 API | compiled against upstream 2.2's own `gpiod.h`, `-Wall -Wextra -Wpedantic -Wshadow`, clean |
+| That a rising edge means "pressed" on an active-low line | read it out of `linux/gpio.h`: v2 edges are logical, "inactive to active" |
+| **The GStreamer pipeline** | **not at all.** There is no GStreamer on this host or in WSL |
+| **Any GPIO line actually moving** | **not at all.** No GPIO on this host, and libgpiod 2.x is not even packaged for Ubuntu 24.04 |
 
-**Confirmed working 2026-09-18** against the real WM8960.
+So on the Pi, in this order — each one isolates a different half:
 
-**Step 3 result (2026-09-18):** **working — both directions at once.** A third
-m-line, pointing the other way.
+```bash
+./check-livekit.sh http://192.168.0.219:4000 porch-1   # the parts, before the whole
+./webrtc-video.py --url … --device-id … --credential-file … --dry-run
+./webrtc-video.py … --check
+./webrtc-video.py … --video test
+./webrtc-video.py …
+```
 
-    browser mic -> Opus -> (pt 98) -> webrtcbin -> rtpopusdepay -> opusdec -> alsasink
+`--dry-run` builds and runs the pipeline with **no LiveKit and no token**, and
+`--check` fetches both tokens with **no camera**. They exist because the two
+halves fail in completely different ways and this host can only test one.
 
-It is built unlike the other two on purpose, and the difference is the lesson of
-this step. The send branches exist in the `parse_launch` string, and each sink pad
-they request creates a transceiver. The return path has no branch, because nothing
-on the Pi produces it: it is asked for with `add-transceiver(RECVONLY, caps)`
-before the pipeline leaves NULL — that is what puts it in the offer — and
-**webrtcbin only grows a src pad for it once the browser answers and starts
-sending**. So the speaker chain is assembled in `on_incoming_stream`, added to a
-pipeline that is already PLAYING, and needs `sync_state_with_parent()` or it sits
-in NULL and stays silent with no error.
+### How the call works now
 
-Payload type **98**: 96 and 97 are taken, and under BUNDLE every payload type on
-the one shared transport must be distinct even across different m-lines.
+```
+libcamerasrc → clock overlay → I420 → appsink ─┐
+                                                ├→ publisher token → LiveKit → viewers
+alsasrc → 48 kHz mono → webrtcdsp → appsink ───┘   (canPublish, canSubscribe false)
 
-**The browser cannot use `addTrack` here.** `addTrack` picks the first audio
-transceiver whose sender has no track — which is the one carrying the Pi's
-microphone *towards* us, not the one waiting for ours. Attaching there would make
-m-line 1 `sendrecv` (which the Pi ignores, being SENDONLY) and leave m-line 2
-`inactive`, so nothing reaches the speaker and nothing says why. `webrtc.html`
-instead parses the offer, finds the audio m-line marked `a=recvonly`, matches it
-by `mid`, then `replaceTrack` + `direction = 'sendonly'` — all before
-`createAnswer`, since an answer is a snapshot of the transceivers at that moment.
+alsasink ← level ← webrtcechoprobe ← appsrc ←───── listener token ← LiveKit ← a viewer
+                                                   (canSubscribe, canPublish false)
+```
 
-**First run, 2026-09-18 — the third m-line was refused.** Two things learned:
+**Two tokens, two connections, one process.** The app server mints a publisher
+token (`canPublish`, `canSubscribe: false`) and a listener token (the reverse),
+both two minutes long and both scoped to `device-porch-1`. `canSubscribe: false`
+is a claim *inside* the token that LiveKit rejects on, not a policy the app
+server enforces — so a leaked publisher token cannot be turned into a way to
+watch the house. They are not interchangeable and must not be merged.
 
-**Port 0 in an offer is not a rejection.** Under `max-bundle` every m-line after
-the first is offered with port 0 and `a=bundle-only`: the track is real, it just
-may not be used on a transport of its own. Port 0 only means refusal in an
-*answer*. The first version of `show_media_lines` did not know the difference and
-reported the Pi's own healthy offer as rejected twice over. It now prints the
-`a=bundle-only` flag, the direction and the rtpmap, and only cries rejection when
-it is one.
+**Tokens are fetched fresh on every connection attempt and never cached.** A
+token is needed to join and for nothing after that, so expiry needs no handling
+beyond not keeping one: a reconnect mints another.
 
-**Chrome will receive mono Opus but will not send it.** The answer came back as
-`m=audio 0 UDP/TLS/RTP/SAVPF 0` — port 0 *and* payload type 0, which is Chrome's
-signature for "no usable codec here", not "don't want it". The cause was the caps
-handed to `add-transceiver`: with no `encoding-params`, webrtcbin writes
-`a=rtpmap:98 OPUS/48000`, and SDP reads a missing channel count as **1**. Chrome's
-Opus encoder only offers `opus/48000/2`, so nothing matched and it refused the
-m-line. The send direction got away with mono because Chrome only had to *decode*
-it. `RETURN_CAPS` now carries `encoding-params=(string)2`.
+**The Pi appears in the room as two participants**, `device:porch-1:pub` and
+`device:porch-1:sub`. The `:sub` half publishes nothing, ever. Anything counting
+who is in the room has to skip identities starting `device:` — `is_viewer()`
+does, and the viewer app must too, or the Pi looks like its own audience and the
+call never ends. This is written up for the app in `docs/server-brief.md`.
 
-That was indeed the whole problem: with `encoding-params=2` the answer came back
-`m=audio 9 … 98  [sendonly; 98 OPUS/48000/2]`, `connection connected`, `ICE
-completed`, and video and the Pi's microphone returned with it. The refused m-line
-had been stalling the entire BUNDLE group.
+**The call ends itself.** The listener connection is the only thing that can see
+who is in the room, so it decides: `--linger` seconds (3) after the last viewer
+leaves, or `--idle-timeout` (30) if nobody ever arrived, the process exits, and
+`porchlightd` learns that from a pidfd. There is no "call ended" message on any
+socket.
 
-**The silence that followed was not WebRTC at all.** The return path was working
-the whole time; it was being played into `hw:CARD=Headphones`, the Pi's own 3.5 mm
-jack, with nothing plugged into it. The HAT has its own jack and is a different
-card. Playing to the default `hw:CARD=wm8960soundcard` instead, **Step 3 works
-completely — both directions at once.**
+**There is no signaling socket of ours in the media path at all.** The daemon
+holds the device's one WebSocket, as `role: "device"`. `viewer-requested` is
+still the cue, still delivered there, and still not an offer; `peer` is kept
+only so the daemon knows which viewer a later `CallEnded` belongs to, and is
+never passed to the media process.
 
-The lesson worth keeping: **`pad-added` proves nothing about traffic.** webrtcbin
-takes the SSRC from the SDP, so the pad, the linked bin and `talking back
-through …` all appear before a single RTP packet does. `Session` now counts
-buffers on that pad and runs a `level` element after the decoder, printing one
-line every two seconds, which separates the three causes that look identical at
-a silent speaker:
+### Route A, and why not WHIP
 
-- `talkback: nothing arriving` → the browser is not sending
-- packets but `dBFS - that is silence` → arriving and decoding, but empty
-- packets and a real level → it is the output, not WebRTC
+The choice was participant tokens with the LiveKit SDK (Route A) against WHIP
+ingress with `whipsink` (Route B). **Route A**, and the deciding facts were not
+the ones either side of the argument started with:
 
-**Step 5 result (2026-09-22): working — a real camera, both directions, one
-connection.** A Camera Module 3 Wide at 640×360/30 into the same `webrtcbin` as
-the microphone and the speaker. The only thing that changed downstream of the
-caps was nothing at all: `videotestsrc` came out and `libcamerasrc` went in, and
-the encoder, payloader, transceivers and signalling were untouched.
+- **`whipsink` is in `gst-plugins-rs`, and Debian 13 does not package it.** So
+  is `livekitwebrtcsink`. Both GStreamer routes need a Rust toolchain and an
+  hour of `cargo` on a Pi 4; WHIP is not the cheap option, it is the same cost
+  plus a server change.
+- **WHIP is publish-only.** The downlink is *subscribing*, which needs a
+  participant connection anyway — so Route B is Route A plus a second transport
+  and a second kind of credential, not instead of it.
+- **The encoder chain Route B would have protected is software x264 anyway.**
+  `v4l2h264enc` stalls when fed by `libcamerasrc` (see Step 5), so the hardware
+  encoder was already unusable with this camera. What the SDK encodes with
+  internally is the same kind of software encode it replaces.
 
-Two faults stood between those two facts, and both are written up below: the
-**clock** one, which is the important lesson of this step, and the ribbon, which
-was not a software problem at all — see "The camera" under The machines.
+What Route A costs is real and worth stating: **frames go through Python**.
+640×360 I420 is 345 KB a frame, copied once into Python and once into the FFI,
+and the tuned `x264enc tune=zerolatency` chain is gone. What it keeps is
+`webrtcdsp` — capture and playback stay in one GStreamer pipeline in one
+process, which is exactly what the echo canceller needs.
 
-`--video` chooses the source and defaults to **`camera`**, for the same reason
-`--audio` defaults to `alsa`. `--video test` is `videotestsrc` again, unchanged,
-and is the bisect tool for "is it the camera or is it everything else".
+**If the pure-GStreamer pipeline is ever wanted back**, `livekitwebrtcsink` is
+the upgrade path and it takes `signaller::auth-token` — *the same participant
+token the server already mints*, and it requires `canSubscribe: false`, which
+is already what the publisher token says. The server would not change. Only the
+Pi would, and only after `gst-plugins-rs` is built there.
 
-Three decisions worth keeping:
+### What the webrtcbin version taught
 
-**`libcamerasrc`, not `v4l2src`.** `/dev/video0` is the sensor, and what comes out
-of it is raw Bayer — the Pi's ISP is a *separate* device that turns that into a
-picture. libcamera drives both halves as one unit. (Phase 2 drives them by hand;
-that is the whole point of `/dev/video0` then `/dev/video11`.)
+Steps 1–3 hand-negotiated with a browser over `server.js`. That code is gone
+from the tree and lives in the git history; these are the parts worth not
+re-learning, because Phase 2 means writing this layer by hand again.
 
-**The imx708 is 16:9 (4608×2592), so the camera default is 640×360, not 640×480.**
-Asking a 16:9 sensor for 4:3 makes the ISP crop the sides off to match — which on
-the **wide** lens throws away exactly the field of view the wide lens was bought
-for. `--size 1280x720` is there, and wants `--encoder v4l2`; the script says so
-itself when the software encoder is asked for more than 640×480.
+- **Port 0 in an *offer* is not a rejection.** Under `max-bundle` every m-line
+  after the first is offered with port 0 and `a=bundle-only`. Port 0 means
+  refusal only in an *answer*.
+- **Chrome will receive mono Opus but will not send it.** Caps with no
+  `encoding-params` emit `a=rtpmap:98 OPUS/48000`, which SDP reads as one
+  channel; Chrome's encoder only offers `opus/48000/2`, so it answers
+  `m=audio 0 … 0` — its way of saying *unusable*, not *unwanted*. One refused
+  m-line stalls the whole BUNDLE group.
+- **Every payload type on a bundled transport must be distinct across m-lines**,
+  which is why the three tracks were 96, 97 and 98.
+- **`addTrack` picks the wrong transceiver** when one is already sending the
+  other way: it must be matched by `mid` and attached with `replaceTrack`
+  before `createAnswer`.
+- **`pad-added` proves nothing about traffic.** webrtcbin takes the SSRC from
+  the SDP, so the pad exists before a single RTP packet does. Everything is
+  counted at the pad for that reason, and the habit survives into the LiveKit
+  version: `video:`, `mic:` and `talk:` are counters, not inferences.
+- **The silence that cost an evening was not WebRTC at all** — it was playing
+  into `hw:CARD=Headphones` with nothing plugged into it. The HAT has its own
+  jack and is a different card.
 
-**No pixel format is pinned on the camera caps.** The encoder branch already asks
-for `I420`, and that preference negotiates back up through `videoconvert`, so
-libcamera hands over I420 directly and `videoconvert` becomes a passthrough.
-Pinning it at the source would turn a free conversion into a hard failure on any
-size the ISP will not produce I420 at. `check-camera.sh` prints the format that
-was actually negotiated, which is how to tell whether that worked.
+### The clock: still the most expensive lesson here, and still live code
 
-A `queue max-size-buffers=2 leaky=downstream` sits between the camera and the
-overlay. `leaky=downstream` drops the **oldest** buffer, not the newest, so an
-encoder that cannot keep up costs dropped frames instead of a picture that falls
-further behind the sound every second. The symptom of an overloaded encoder is
-therefore a jerky picture, not a growing delay.
+**`alsasrc` provides a clock and `libcamerasrc` does not.** With both in one
+pipeline GStreamer makes the sound card's clock the pipeline clock, while
+`libcamerasrc` goes on timestamping from the system monotonic clock regardless.
+Every video buffer then reaches the sink with a running time computed by
+subtracting a base time in one clock's units from a timestamp in another's, and
+**the video branch stalls within a second** — the camera keeps delivering 30 fps
+and nothing comes out the other end — while audio, stamped against its own
+clock, runs perfectly and hides the cause.
 
-**The one that cost a whole session: `alsasrc` provides a clock, `libcamerasrc`
-does not.** With both in one pipeline GStreamer makes the *sound card's* clock the
-pipeline clock, while `libcamerasrc` goes on timestamping from the system
-monotonic clock regardless. Every video buffer then reaches `webrtcbin` with a
-running time computed by subtracting a base time in one clock's units from a
-timestamp in another's, and **the video branch stalls within a second** — the
-camera keeps delivering 30 fps and nothing leaves the payloader — while audio,
-stamped against its own clock, runs perfectly and hides the cause. `Session` now
-calls `pipeline.use_clock(Gst.SystemClock.obtain())`.
+The fix is one line, `pipeline.use_clock(Gst.SystemClock.obtain())`, and it is
+still in `webrtc-video.py` for exactly the same reason. `porchlightd`'s recorder
+cannot call it from a `gst-launch` command line, so it makes the card decline
+the job instead with `provide-clock=false` — asserted in `pipeline_test.cpp`.
 
 `videotestsrc` paces itself off whichever clock the pipeline chose, so Steps 1–3
-were immune by accident and this only appeared at Step 5.
-
-What made it hard to find is that every cheap test misses it:
+were immune by accident and this only appeared at Step 5. Every cheap test
+misses it:
 
 | Test | Result | Why it proves nothing |
 |---|---|---|
@@ -199,62 +226,93 @@ What made it hard to find is that every cheap test misses it:
 | `--audio none` with the camera | works | removes the other clock |
 | camera + `--audio alsa` | **stalls** | the only combination that has both |
 
-**So the bisect that finds it is `--audio none`, not any amount of `gst-launch`.**
-Two plausible theories were eliminated first and neither was right: the pinned
-`I420` making `videoconvert` a passthrough (tested — the branch runs fine either
-way), and `libcamerasrc`'s timestamps being unusable (tested with `sync=true` —
-they are fine, against the *right* clock).
+**So the bisect that finds it is `--audio none`, not any amount of
+`gst-launch`.**
 
-**`v4l2h264enc` does not work with `libcamerasrc`** — a plain
-`libcamerasrc ! videoconvert ! v4l2h264enc ! fakesink` stalls outright, where
-`x264enc` runs at 30 fps. So `--encoder v4l2` is not currently an option with the
-camera, and any move to 720p needs that understood first. Not yet investigated.
+### The camera
 
-Autofocus is set in Python, not in the pipeline string: libcamera exposes each
-sensor control as a GObject property, and which ones exist depends on the sensor
-and the libcamera version, so a missing one in `parse_launch` would take the whole
-pipeline down. `set_focus` reads `list_properties()` first and prints a note
-instead. `--focus` takes `continuous` (the default), `default` (leave libcamera
-alone), or a distance in metres — **a doorbell does not move, and continuous AF
-visibly hunts on a static scene**, so a fixed `--focus 1.5` is probably what this
-wants in the end.
+Four decisions, all still in force:
 
-To run headphones-only on the HAT and keep the mics from hearing the speaker
-(worth it until Step 4 exists — the WM8960 drives the two amps separately):
+**`libcamerasrc`, not `v4l2src`.** `/dev/video0` is the sensor and what comes
+out of it is raw Bayer — the Pi's ISP is a *separate* device that turns that
+into a picture. libcamera drives both halves as one unit. (Phase 2 drives them
+by hand; that is the whole point of `/dev/video0` then `/dev/video11`.)
+
+**The imx708 is 16:9 (4608×2592), so the camera default is 640×360, not
+640×480.** Asking a 16:9 sensor for 4:3 makes the ISP crop the sides off, which
+on the **wide** lens throws away exactly the field of view the wide lens was
+bought for. The same default is now in `porchlightd`'s `media` config, and both
+warn when they are given something that is not 16:9.
+
+**The full sensor mode is forced.** Left alone, libcamera picks the binned
+1536×864 mode for any small request, and that mode reads only the centre
+3072×1728 of the array — about 120° of diagonal field of view reduced to about
+98. `sensor-config` asks for 2304×1296, which reads the whole array and still
+runs at 56 fps.
+
+**Autofocus is set in Python, not in the pipeline string.** libcamera exposes
+each sensor control as a GObject property and which ones exist depends on the
+sensor and the libcamera version, so a missing one in `parse_launch` would take
+the whole pipeline down. `set_focus` and `set_sensor_mode` read
+`list_properties()` first and print a note instead. `tune_dsp` now does the same
+for `webrtcdsp`, for the same reason. **`af-mode` defaults to *manual* at
+lens-position 0, which is infinity**, so leaving focus alone is not a neutral
+choice — a doorbell does not move, and `--focus 1.5` is probably what this wants
+in the end, since continuous AF visibly hunts on a static scene.
+
+**A new constraint from LiveKit: the picture size must have a width that is a
+multiple of 8 and an even height.** GStreamer pads I420 rows up to a multiple of
+four and the SDK reads the planes tightly packed. They agree at 640×360, 640×480
+and 1280×720 and can disagree elsewhere, and the symptom would be a picture
+sheared diagonally rather than an error — so `parse_size` refuses it, the
+config reader refuses it, and the frame is dropped with a message if it ever
+gets past both.
+
+**`v4l2h264enc` still does not work with `libcamerasrc`** — a plain
+`libcamerasrc ! videoconvert ! v4l2h264enc ! fakesink` stalls outright where
+`x264enc` runs at 30 fps. It no longer blocks the call, which does not encode in
+GStreamer at all, but it still constrains the recorder. Not yet investigated.
+
+### Echo cancellation
+
+`webrtcdsp` on the capture branch and `webrtcechoprobe` on the playback branch,
+both in **one pipeline in one process** — they find each other by element name,
+and putting them in one pipeline is stronger than it needs to be and removes the
+question entirely. `--aec off` turns both off, and is automatic when there is no
+playback to cancel against.
+
+Only `echo-cancel` is set in the launch string. `delay-agnostic`,
+`high-pass-filter`, `noise-suppression` and `gain-control` go through
+`tune_dsp`, which checks `list_properties()` first — the set differs between
+versions and a missing property in `parse_launch` is fatal.
+
+Until this is confirmed working, the way to keep the mics from hearing the
+speaker is still to run headphones-only on the HAT — the WM8960 drives the two
+amps separately:
 
 ```bash
 amixer -c 2 sset "Speaker" 0%     # restore with 82%
 ```
 
-Also seen, and not yet explained: the offer says `[sendrecv]` on m-lines 0 and 1
-even though `transceiver.direction = SENDONLY` is set on both before the pipeline
-leaves NULL. Harmless — the browser answers `recvonly` either way — but it means
-that assignment is not taking effect on webrtcbin 1.26.
-
-`pipeline warning: Can't record audio fast enough` appears once at startup. That is
-`alsasrc` overrunning — the capture side, and unrelated to anything above. It may
-mean `buffer-time=40000` is tighter than this Pi likes; raise it if the Pi→browser
-audio ever breaks up.
-
-A healthy run looks like this, and is the quickest way to tell what broke:
+### A healthy run
 
 - `camera: sensor mode 2304x1296` and `camera: continuous autofocus`
+- `audio: echo cancellation on (echo-cancel, delay-agnostic, …)`
 - libcamera's own `Selected sensor format: 2304x1296-SBGGR10_1X10/RAW` and
-  `configuring streams: (0) 640x360-YUV420` — the second confirms the I420 pin took
-- three `offer: m=...` lines, the last two flagged `port 0 + a=bundle-only: normal`
-- `2 transceiver(s) sending, 1 receiving`
-- all three `answer:` lines with a real port, the third `[sendonly; 98 OPUS/48000/2]`
-- `connection connected`, `ICE completed`
-- `video:` lines reading `30 fps from the source, ~100 RTP packets/2s`, and
+  `configuring streams: (0) 640x360-YUV420`
+- `publisher: joined device-porch-1 as device:porch-1:pub`, then
+  `publisher: camera published` and `publisher: microphone published`
+- `listener: joined device-porch-1 as device:porch-1:sub`
+- `listener: 1 viewer(s): user:…`
+- `video:` lines reading `30 fps from the source, 30 published/s`, and
   **staying** that way — this is the line that catches the clock fault
-- `talking back through …`, then `talkback:` lines with a real dBFS figure
-- in the browser, one `route` row for all three tracks (one candidate pair =
-  bundling working) and `your mic out` counting bytes
+- `mic: 100 frames/s`
+- `talk: nothing arriving` until someone holds the button, then a real dBFS
+- `room: 1 viewer(s): user:…`
 
-Both directions are counted at the pad, not inferred, and for the same reason:
-negotiation, a pad appearing and a bitrate figure in the browser can all look
-healthy while nothing moves. `video: 30 fps from the source, but no RTP leaving`
-is what turned "the picture froze" into a located fault.
+`video: 30 fps from the source, but none reaching LiveKit` is the line that
+turns "the picture froze" into a located fault, and it is the direct descendant
+of the pad counters from Step 5.
 
 ## The machines
 
@@ -263,15 +321,21 @@ no key is installed, so Claude cannot run commands there. To change that:
 `ssh-keygen -t ed25519` then append the public key to `~/.ssh/authorized_keys` on the Pi.
 
 - Raspberry Pi 4 Model B Rev 1.5, kernel 6.18.50+rpt-rpi-v8 (aarch64), Debian 13 trixie
-- GStreamer 1.26.2. Verified present: `webrtcbin`, `opusenc`/`opusdec`,
-  `rtpopuspay`/`rtpopusdepay`, `alsasrc`/`alsasink`, `audioconvert`, `audioresample`,
-  `webrtcdsp`, `videotestsrc`, `textoverlay`, `rtph264pay`, `v4l2h264enc`, `x264enc`
-- Python bindings `Gst`, `GstWebRTC`, `GstSdp` all import
+- GStreamer 1.26.2. Verified present: `opusenc`/`opusdec`, `alsasrc`/`alsasink`,
+  `audioconvert`, `audioresample`, `webrtcdsp`, `videotestsrc`, `textoverlay`,
+  `v4l2h264enc`, `x264enc` — and `webrtcbin`, `rtpopuspay`/`rtpopusdepay`,
+  `rtph264pay`, which nothing uses any more
+- `appsink`/`appsrc` and `webrtcechoprobe` are what the call needs now, and
+  **neither has been confirmed on this Pi** — `check-livekit.sh` is what checks
+- Python bindings `Gst` imports; `GstWebRTC` and `GstSdp` did too, and are no
+  longer used
 - **`v4l2h264enc` exists — this is a Pi 4, which has a hardware H.264 encoder.**
   `/dev/video11` is the encoder, `/dev/video10` the decoder. (Do not repeat the
   earlier mistake of assuming a Pi 5; a Pi 5 has no H.264 encode block, a Pi 4 does.)
-  It **stalls when fed by `libcamerasrc`**, though, so `--encoder v4l2` is not
-  usable with the camera — see Step 5. `x264enc` carries 640×360/30 easily.
+  It **stalls when fed by `libcamerasrc`**, though, so `recorder.encoder: "v4l2"`
+  is not usable with the camera — see "The camera". `x264enc` carries 640×360/30
+  easily. This constrains the **recorder** only: the call does not encode in
+  GStreamer at all, so the hardware encoder is no longer on its critical path.
 - `libcamerasrc` (`gstreamer1.0-libcamera` 0.7.2) installed 2026-09-22, with
   `rpicam-apps` 1.13.0 already present.
 - Audio out available besides the HAT: `card 3` = the Pi's own headphone jack,
@@ -403,6 +467,40 @@ sudo alsactl store               # only once it is right
 usually right for voice, but change it separately from the gain or neither result
 means anything.
 
+**The button, the PIR and the LED** — fitted 2026-09-23, on BCM lines **24**,
+**23** and **25**. They avoid GPIO 2–3 and 18–21, which the WM8960 HAT holds
+for its control I²C and its I²S, so the HAT and the doorbell coexist on one
+header.
+
+- **Button** — a plain switch to ground on GPIO24, with **no external
+  resistor**, so the Pi's internal pull-up holds it high between presses.
+  Active low. Debounced by the kernel at 30 ms through the line request.
+- **PIR** — an **AM312** on GPIO23, powered from the Pi's **3.3 V** rail, OUT
+  to the line, output 3.3 V logic. Active high, and its pulse measures
+  **2–2.5 s**. Bias disabled: the AM312 drives both ways and a pull would fight
+  it. No debounce — it is a clean digital output, not a contact, and repeats
+  are `motion_cooldown_seconds` to handle. (An HC-SR501 would need care here
+  instead: its delay pot sets the pulse width, and it wants 5 V.)
+- **LED** — one colour, GPIO25 straight into a series resistor and on to
+  ground. No transistor, not addressable. Six states, no PWM, so they are told
+  apart by blink rate and shape; the table is `io/led_patterns.h`.
+
+**Both inputs are read as asserted on a rising edge**, and polarity is
+reconciled per line by `active_low` in the config rather than by choosing a
+different edge for each. This is kernel behaviour, not a guess: `linux/gpio.h`
+defines the v2 edge flags logically — `EDGE_RISING` is "rising (*inactive to
+active*) edges" — and `ACTIVE_LOW` as "line active state is physical low", so
+the button's physical fall to ground **is** the rising edge. Backwards, the
+doorbell rings on release, which reads as a laggy button rather than as a
+polarity fault.
+
+**libgpiod 2.x is required, and 1.x is not a fallback** — the C API is an
+unrelated one. Debian 13 trixie has 2.x; Debian 12 and Ubuntu 24.04 both still
+ship 1.6.3, which is why none of this could be compile-checked against a
+packaged header on the dev host. The backends are behind
+`-DPORCHLIGHT_GPIO=ON`, **off by default**, so WSL2 never needs a dependency it
+cannot install.
+
 ## Open problems
 
 **1. ~~The WM8960 cannot be opened.~~ It records. Do not "fix" it.**
@@ -492,25 +590,17 @@ first. The PCM intercom was deleted on 2026-09-19, eight files and half of
 `server.js`, with no way to get any of it back. Work goes on `development` and
 reaches `main` when it is confirmed working.
 
-**3. A secure context is needed from Step 3 on — but not necessarily HTTPS.**
-`getUserMedia` refuses outside one, so plain `http://192.168.0.219:3000` can receive
-media but never send it. Steps 1–2 were unaffected.
+**3. ~~A secure context is needed from Step 3 on.~~ Not ours any more.**
+`getUserMedia` still refuses outside a secure context, but nothing on this side
+calls it: the Pi does not use a browser, and the viewer is the app, which is
+served over HTTPS by the app server. This was only ever a constraint on
+`public/webrtc.html`, which no longer has a Pi to talk to.
 
-**`http://localhost` is already a secure context**, with no certificate anywhere.
-The browser has been running on the server host all along, so Step 3 needs nothing
-but a different URL:
-
-```
-http://localhost:3000/webrtc.html          works, sends the microphone
-http://192.168.0.219:3000/webrtc.html      receives only, silently
-```
-
+It is recorded because the reasoning still applies to any future dev page:
+**`http://localhost` is already a secure context**, with no certificate
+anywhere, so a page served to the machine it runs on needs no HTTPS at all.
 `webrtc.html` checks `window.isSecureContext` on load and says so in a banner
-rather than letting the permission call fail with a bare error, and it still runs
-receive-only so the difference is visible rather than fatal.
-
-HTTPS is only needed to call in from **another** machine — a phone, a laptop. Not
-needed yet; decide when something other than the server host wants to talk.
+rather than letting the permission call fail with a bare error.
 
 **4. Restart the server after pulling changes.** A long-running `node server.js`
 keeps serving the old code, including the old `/ws` handler with no signaling.
@@ -528,41 +618,80 @@ A hang is never a stale route. Check `Get-NetTCPConnection -LocalPort 3000
 -State Listen` on the server host first: if something *is* listening and the Pi
 still hangs, it is the firewall profile every time.
 
-**5. The Windows clock is wrong, which corrupts the on-screen delay measurement.**
-Measured 2026-09-18: **1.76 s fast**, never synced (`Source: Local CMOS Clock`,
-`Last Successful Sync Time: unspecified`). The browser clock therefore reads ~1.76 s
-higher than the Pi's, and the apparent glass-to-glass delay is inflated by exactly
-that much. Subtract it, or fix the clock from an **administrator** PowerShell:
+**5. The Windows clock, which is now load-bearing rather than cosmetic.**
+Measured 2026-09-18 at **1.76 s fast** and never synced. Re-measured
+2026-09-22: **+0.28 s**, so it has been resynced at some point since and is
+fine.
+
+It matters more than it did. It used to inflate only the on-screen glass-to-
+glass delay, which is read by a human who can subtract. The app server now
+mints LiveKit tokens on this machine with **`nbf` set to the mint time**, so if
+its clock ever runs ahead of LiveKit's, every token is *not yet valid* on
+arrival — and nothing on the Pi would say so in those words. go-jose's default
+leeway is a minute, so there is a lot of room, but the failure mode is
+silent-looking and worth knowing exists.
 
 ```powershell
+w32tm /stripchart /computer:time.windows.com /samples:3 /dataonly   # measure
 w32tm /resync                            # if the service is already configured
 net start w32time; w32tm /resync         # if it is not running
-w32tm /stripchart /computer:time.windows.com /samples:3 /dataonly   # re-measure
 ```
 
-A negative stripchart offset means the local clock is **ahead** of true time.
+A **negative** stripchart offset means the local clock is **ahead** of true
+time, which is the direction that breaks tokens.
+
+**6. The chime cannot play during a call, and nothing handles that.**
+`porchlightd`'s `AlsaChime` opens `plughw:CARD=wm8960soundcard` and the call
+holds the same card for as long as it is up, so a doorbell press during a live
+view will fail to chime. The daemon's own rule is that *the chime never waits
+for anything* — it is a local effect and plays whether or not the server has
+ever been reachable — and this quietly breaks that. Neither half knows about
+the other. Options are a `dmix` plug so both can open it, or routing the chime
+through the call's own pipeline. Not yet decided, and it is a real gap.
+
+**7. Nothing installs the call on a Pi.** `backends.media: "script"` expects
+`/usr/local/lib/porchlight/webrtc-video.py` and an interpreter at
+`/opt/porchlight/venv/bin/python3`, and there is no installer, no packaging
+step and nothing in the systemd unit that puts either there. Today it is
+`curl`, `chmod +x`, `python3 -m venv --system-site-packages` and `pip install
+livekit`, by hand, written out under "Running it". The same gap the daemon's
+own tarball has.
+
 
 ## The codebase
 
 ```
 CLAUDE.md               This file: what exists, and how to work on it.
+RUNBOOK.md              Cold start, in order: which terminal, which machine,
+                        which command. Assumes everything is already installed.
 DESIGN.md               How the finished system is meant to work. Settled decisions.
+docs/architecture.md    The three flows as built - alerts, clips, live stream -
+                        across the Pi, the app server and the browser. Written
+                        from the code. What server-brief.md specifies, this one
+                        describes.
 docs/server-brief.md    What the app server has to provide, written for whoever
                         builds it. Alerts, the three clip steps, LiveKit tokens.
                         Where this repo and that document disagree, that one wins.
 porchlightd/            The C++20 doorbell daemon, with its own README and its own
                         step table. Decides when to alert, record, chime and call.
-server.js               Express + ws. Static files and the signaling switchboard.
-                        164 lines, and carries no media at all.
-public/webrtc.html      Steps 1-3: RTCPeerConnection, video + Opus both ways, a
-                        level meter per direction, mute, live stats with A/V skew.
-                        Warns when it is not a secure context.
+                        src/io/gpio_input.* is the button and the PIR on one
+                        libgpiod request; src/io/gpio_led.* drives the LED and
+                        owns the timer that blinks it; src/io/led_patterns.h is
+                        the blink table, free of libgpiod so the tests can read
+                        it on a machine with no GPIO. All behind -DPORCHLIGHT_GPIO.
+server.js               Express + ws. The dev server: it serves the Pi's scripts by
+                        name, which is load-bearing, and a signaling switchboard
+                        that nothing uses any more, which is not.
+public/webrtc.html      The Steps 1-3 viewer, and now an orphan: no Pi answers its
+                        request-offer. Kept because it is what the app replaced.
 public/porchlightd.tar.gz   Not tracked. `git archive` output, so the Pi can curl
                         the daemon's source - it has no clone. Stale by default:
                         regenerate it after every change. See Conventions.
-pi/webrtc-video.py      Steps 1-3 and 5: a camera -> H.264 and a mic -> Opus out, the
-                        browser's mic -> alsasink back, all on one webrtcbin, plus
-                        signaling. The name is stale; it is the whole Pi client now.
+pi/webrtc-video.py      The live call. Camera and mic into LiveKit under a publisher
+                        token, a viewer's mic back out of the speaker under a
+                        listener token, webrtcdsp between them. No SDP, no socket
+                        of ours. --dry-run is the pipeline alone, --check the
+                        tokens alone. The name is stale and the references are not.
 pi/server-bridge.py     porchlightd's WebSocket to the app server, as a child
                         process: C++ has no WebSocket, python3-websocket is here.
 pi/upload-clip.py       One clip, in three steps - signed url, PUT, confirm. Judged
@@ -571,7 +700,11 @@ pi/check-audio.sh       Read-only hardware audit: card, driver conflicts, mixer,
                         recording with levels, GStreamer elements, Python bindings.
 pi/check-camera.sh      The same for the camera: overlay, sensor driver, what
                         libcamera sees, a real still, and timed GStreamer capture
-                        through each encoder. Read-only. Run it before Step 5.
+                        through each encoder. Read-only.
+pi/check-livekit.sh     The same for the call: the venv and the SDK, the GStreamer
+                        elements, the credential and what the two tokens grant,
+                        and whether anything else holds the camera or the card.
+                        Read-only. Run it before the first call on a Pi.
 pi/fix-wm8960.sh        Surveys Waveshare's installer and undoes it reversibly.
                         --apply moves files to /var/backups/wm8960-fix, --restore
                         puts them back. Refuses to act on anything ambiguous.
@@ -584,10 +717,21 @@ tools/clip-stub.js      The app server's clip endpoints and a bucket, faked - an
 ```
 
 `server.js` serves `pi/*` scripts by name (`/check-audio.sh`, `/check-camera.sh`,
-`/fix-wm8960.sh`, `/webrtc-video.py`, `/server-bridge.py`, `/upload-clip.py`) so
-the Pi can `curl -fO` them. Add new Pi scripts to that list.
+`/check-livekit.sh`, `/fix-wm8960.sh`, `/webrtc-video.py`, `/server-bridge.py`,
+`/upload-clip.py`) so the Pi can `curl -fO` them. **Add new Pi scripts to that
+list** or the Pi gets a fast 404 and no explanation.
 
 ## The signaling protocol
+
+**This is the *development* protocol, and the device no longer speaks it.** It
+is what `server.js`, `public/webrtc.html` and `tools/signal-test.js` share, and
+nothing else. The protocol the Pi actually speaks to the real app server is in
+[porchlightd/docs/protocol.md](porchlightd/docs/protocol.md): one socket, held
+by the daemon as `role: "device"`, carrying alerts out and `viewer-requested`
+in, and no SDP in either direction.
+
+It is kept because Phase 2 means writing this layer by hand again, and because
+`signal-test.js` is still the way to exercise a switchboard without media.
 
 All JSON text frames on `/ws`. **The server never parses SDP or candidates** —
 it assigns ids, remembers which socket is the Pi, and forwards by `to`, stamping `from`.
@@ -636,60 +780,93 @@ node tools/signal-test.js
 node tools/clip-stub.js --out ./received   # the app server's clip endpoints, faked
 ```
 
-On the Pi:
+On the Pi. There is no git clone there, so everything arrives by `curl`:
 
 ```bash
-curl -fO http://192.168.0.219:3000/check-audio.sh && chmod +x check-audio.sh && ./check-audio.sh
-curl -fO http://192.168.0.219:3000/check-camera.sh && chmod +x check-camera.sh && ./check-camera.sh
-curl -fO http://192.168.0.219:3000/fix-wm8960.sh && chmod +x fix-wm8960.sh && ./fix-wm8960.sh
-curl -fO http://192.168.0.219:3000/webrtc-video.py && chmod +x webrtc-video.py
-./webrtc-video.py 192.168.0.219                    # camera + mic in + speaker out
-./webrtc-video.py 192.168.0.219 --video test       # videotestsrc again, to bisect
-./webrtc-video.py 192.168.0.219 --size 1280x720 --encoder v4l2
-./webrtc-video.py 192.168.0.219 --focus 1.5        # fix the lens, no AF hunting
-./webrtc-video.py 192.168.0.219 --no-talkback      # Step 2 again, one way only
-./webrtc-video.py 192.168.0.219 --audio test       # a tick, while the HAT is down
-./webrtc-video.py 192.168.0.219 --audio none       # Step 1 again, video only
-./webrtc-video.py 192.168.0.219 --encoder v4l2     # the Pi 4's hardware encoder
-./webrtc-video.py 192.168.0.219 --print-sdp        # dump the offer and answer
-./webrtc-video.py 192.168.0.219 --pattern smpte    # --video test: bars, not the ball
-./webrtc-video.py 192.168.0.219 --speaker-device hw:CARD=Headphones
+for f in check-audio.sh check-camera.sh check-livekit.sh fix-wm8960.sh webrtc-video.py; do
+  curl -fO "http://192.168.0.219:3000/$f" && chmod +x "$f"
+done
 ```
 
-A camera goes to one process at a time, exactly like an ALSA `hw:` device — a
-stray `rpicam-hello` will make `webrtc-video.py` fail to open it, and the other
-way round.
+The LiveKit SDK is a pip package and `python3-gi` is an apt one, so the call
+runs under a venv that can see both. **`--system-site-packages` is not
+optional** — without it the SDK imports and `import gi` does not, which reads
+as a GStreamer problem and is not one:
+
+```bash
+sudo apt install -y gstreamer1.0-libcamera rpicam-apps gstreamer1.0-alsa      gstreamer1.0-plugins-bad python3-gi python3-gst-1.0
+sudo python3 -m venv --system-site-packages /opt/porchlight/venv
+sudo /opt/porchlight/venv/bin/pip install livekit
+```
+
+Then, in this order — each one takes a different half out of the picture:
+
+```bash
+./check-livekit.sh http://192.168.0.219:4000 porch-1    # the parts, before the whole
+
+PY=/opt/porchlight/venv/bin/python3
+ARGS="--url http://192.168.0.219:4000 --device-id porch-1 --credential-file ./credential"
+
+$PY webrtc-video.py $ARGS --dry-run       # pipeline only: camera, card, caps. No network.
+$PY webrtc-video.py $ARGS --check         # tokens only: the credential. No camera.
+$PY webrtc-video.py $ARGS --video test    # the whole call, camera taken out of it
+$PY webrtc-video.py $ARGS                 # the real thing
+```
+
+and the rest of the switches:
+
+```bash
+$PY webrtc-video.py $ARGS --focus 1.5             # fix the lens, no AF hunting
+$PY webrtc-video.py $ARGS --size 1280x720         # width must be a multiple of 8
+$PY webrtc-video.py $ARGS --codec vp8             # if H.264 misbehaves in the app
+$PY webrtc-video.py $ARGS --aec off               # it will howl; proves AEC is the cause
+$PY webrtc-video.py $ARGS --no-talkback           # one way, but still watches the room
+$PY webrtc-video.py $ARGS --audio test            # a tick, while the HAT is down
+$PY webrtc-video.py $ARGS --audio none            # video only
+$PY webrtc-video.py $ARGS --speaker-device hw:CARD=Headphones
+$PY webrtc-video.py $ARGS --pattern smpte         # --video test: bars, not the ball
+```
+
+Normally none of this is typed: `porchlightd` runs it on `viewer-requested`,
+with `backends.media: "script"` and the `media` block in its config saying which
+interpreter and which switches.
+
+**The camera and the sound card each go to one process at a time.** A stray
+`rpicam-hello`, a second copy of the call, or `porchlightd`'s own recorder will
+hold either, and the failure reads as "cannot open" rather than "something else
+has it". `check-livekit.sh` names the pid. It is also why the core stops a
+recording and waits for its EOS before it starts a call — and why the chime
+cannot play while a call is up, which is a real gap and not yet solved.
 
 `--mic-device` and `--speaker-device` both default to `hw:CARD=wm8960soundcard`.
-Audio needs `gstreamer1.0-alsa` as well as the plugin sets Step 1 wanted, and the
-camera needs `gstreamer1.0-libcamera`:
 
-```bash
-sudo apt install -y gstreamer1.0-libcamera rpicam-apps
-```
-
-**Until Step 4, the Pi will hear itself.** One card, speaker centimetres from the
-microphones, no cancellation. Use headphones on the Pi, keep the volume down, or
-`--speaker-device hw:CARD=Headphones` (`card 3`, the Pi's own jack) to prove both
-directions work before any of that matters. The script prints this warning itself
-when mic and speaker are the same device.
-
-Then open **`http://localhost:3000/webrtc.html`** on the server host and press
-Connect. Not the LAN address: `getUserMedia` needs a secure context and `localhost`
-is one — see open problem 3.
-
-An ALSA `hw:` device goes to one process at a time, so stop anything else using
-the card before a test that touches it.
+**`public/webrtc.html` no longer has anything to talk to.** It still loads and
+still asks for an offer, and no Pi will ever answer: the call publishes to
+LiveKit and the viewer is the app. It is kept as the record of what Steps 1–3
+were.
 
 ## Conventions
 
 - **Comments say why, not what.** The existing code explains the non-obvious
-  decisions (why `encoding-params=2` is not cosmetic, why `pad-added` proves
-  nothing about traffic, why every audio node must stay referenced). Match that.
+  decisions (why a video frame is copied with `bytes()` rather than passed as a
+  memoryview, why the credential travels as a path, why `provide-clock=false` is
+  on the recorder's `alsasrc` and nowhere else). Match that.
+- **Counted, never inferred.** A track publishing, a pad appearing and a
+  bitrate in the viewer's browser can all look healthy while nothing moves. Every
+  direction has a counter at the point where it hands over, and the two-second
+  report prints them. This habit has located three separate faults.
+- **A property that may not exist is set in Python, not in a launch string.**
+  `set_focus`, `set_sensor_mode` and `tune_dsp` all read `list_properties()`
+  first and print a note. A missing property inside `parse_launch` takes the
+  whole pipeline down.
 - **No build step, no framework, no bundler.** Plain files served statically.
-- **"One at a time, and a new one replaces the old."** Used for the Pi's signaling
-  socket and its WebRTC session, so a half-open connection never locks out the
-  reconnect. Note that DESIGN.md changes this: 1–5 viewers per Pi is the target.
+  The one exception is the Pi's venv, which the LiveKit SDK forces — see open
+  problem 7.
+- **"One at a time, and a new one replaces the old."** Still how the daemon's
+  socket signs in (`role: "device"`, replacing its own predecessor). It no
+  longer applies to the call: **one media process serves every viewer**, because
+  the Pi publishes one stream and LiveKit copies it out. 1–5 viewers per Pi is
+  the target, and that now costs the device nothing.
 - **Scripts reach the Pi by `curl` from the server**, never by paste — an indented
   heredoc terminator silently breaks a pasted script. Files here use LF endings; if
   one ever arrives with CRLF, `sed -i 's/\r$//'`.

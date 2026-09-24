@@ -8,7 +8,7 @@
     "chime": "alsa",
     "server": "bridge",
     "uploader": "script",
-    "media": "stub",
+    "media": "script",
     "recorder": "gstreamer"
   },
 
@@ -54,11 +54,33 @@
     "video_bitrate_kbps": 2000
   },
 
+  "media": {
+    "python": "/opt/porchlight/venv/bin/python3",
+    "script": "/usr/local/lib/porchlight/webrtc-video.py",
+    "video_source": "camera",
+    "width": 640,
+    "height": 360,
+    "fps": 30,
+    "codec": "h264",
+    "video_bitrate_kbps": 1500,
+    "focus": "continuous",
+    "audio_source": "alsa",
+    "mic_device": "hw:CARD=wm8960soundcard",
+    "speaker_device": "hw:CARD=wm8960soundcard",
+    "talkback": true,
+    "echo_cancel": true,
+    "idle_timeout_seconds": 30,
+    "linger_seconds": 3
+  },
+
   "gpio": {
     "chip": "/dev/gpiochip0",
-    "button_line": 17,
-    "motion_line": 27,
-    "led_line": 22,
+    "button_line": 24,
+    "motion_line": 23,
+    "led_line": 25,
+    "button_active_low": true,
+    "motion_active_low": false,
+    "led_active_low": false,
     "debounce_ms": 30
   }
 }

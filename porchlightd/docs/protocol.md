@@ -1,9 +1,9 @@
-# Device protocol (proposal)
+# Device protocol
 
-What `porchlightd` needs from the app server. **Nothing here is implemented.**
-`server.js` has no event message and no upload endpoint, and this task does not
-touch it. This file exists so the daemon's offline queue and its retry rules are
-written against a decided shape rather than an imagined one.
+What `porchlightd` needs from the app server, and what it now speaks to a real
+one. `server.js` is **not** that server: it has no event message and no upload
+endpoint, and never will — it is the LAN development stub. The real app server
+implements everything below.
 
 Two channels, because they have different failure modes:
 
@@ -15,29 +15,29 @@ Two channels, because they have different failure modes:
 An alert must arrive in under a second and is small. A clip is megabytes and can
 wait. Putting them on one channel would let an upload delay a doorbell.
 
-## The role split, and why it is a trap
-
-Three roles share `/signal`. They present the **same credential** and differ
-only by that one string.
+## The role split, and what became of it
 
 | role | who | what it does |
 |---|---|---|
 | `device` | `porchlightd` | sends alerts, receives viewer requests |
-| `pi` | `webrtc-video.py` | carries the call |
+| ~~`pi`~~ | ~~`webrtc-video.py`~~ | **nothing — the media script has no socket now** |
 | `browser` | a viewer | watches |
 
-Replacement is scoped **per role**, so a reconnecting daemon displaces only the
-previous daemon. Give the daemon `'pi'` and every reconnect silently closes the
-media script's socket — which presents as video that randomly stops working
-rather than as an authentication error, and so gets debugged in entirely the
-wrong place.
+**The device holds exactly one socket, and the daemon holds it.** When the call
+moved to LiveKit, `webrtc-video.py` stopped exchanging SDP with anybody: it
+POSTs for a token with the device credential and negotiates with LiveKit
+directly. So the `pi` role has no client on this device any more, and the trap
+the rest of this section described — a reconnecting daemon claiming `'pi'` and
+silently closing the media script's socket — can no longer happen because there
+is no second socket to close.
 
-Worse: **only `device` may send events**, and from any other role they are
-*silently ignored*. Silence is also how the server signals a transient
-failure, so a misconfigured role means retrying forever and never succeeding.
+It is still worth the server keeping the roles apart. **Only `device` may send
+events**, and from any other role they are *silently ignored*; silence is also
+how the server signals a transient failure, so a misconfigured role means
+retrying forever and never succeeding. That is the same failure it always was.
 
-`webrtc-video.py` already sends `'pi'`
-([line 544](../../pi/webrtc-video.py#L544)); the daemon sends `'device'`.
+`pi/server-bridge.py` sends `'device'`, which is the only `hello` this device
+sends at all.
 
 ## The credential
 
@@ -116,9 +116,21 @@ Server to device, unchanged in spirit from today's `request-offer`:
 { "type": "viewer-requested", "peer": 7 }
 ```
 
-The daemon does not answer this itself. It stops any recording, then tells
-`webrtc-video.py` to take the call over the local socket that is out of scope
-here. The reply travels on the media script's own signaling socket, not this one.
+The daemon does not answer this at all, and there is nothing it could answer
+with: there is no offer here and no SDP anywhere on this socket.
+
+It stops any recording — the camera and the sound card go to one process at a
+time, and the recorder has both — and once the recorder has flushed its EOS it
+runs `webrtc-video.py`, which fetches its own LiveKit tokens and joins the
+room. `peer` is never passed on; the script joins a room, not a peer. It is
+kept only so the daemon can tell the core which viewer a `CallEnded` belongs
+to.
+
+**Nothing comes back on this socket when the call ends.** The script is the
+half that can see who is in the room, so it decides when the call is over and
+exits; the daemon learns that from a pidfd. A second `viewer-requested` while
+a call is running is nothing to act on — the Pi publishes one stream and
+LiveKit copies it out to as many viewers as there are.
 
 ## Clip upload
 

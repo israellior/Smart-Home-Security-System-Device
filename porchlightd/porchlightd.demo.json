@@ -43,9 +43,12 @@
 
   "gpio": {
     "chip": "/dev/gpiochip0",
-    "button_line": 17,
-    "motion_line": 27,
-    "led_line": 22,
+    "button_line": 24,
+    "motion_line": 23,
+    "led_line": 25,
+    "button_active_low": true,
+    "motion_active_low": false,
+    "led_active_low": false,
     "debounce_ms": 30
   }
 }

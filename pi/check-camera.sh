@@ -445,9 +445,10 @@ head2 "Summary"
 if [ "$MISSING" -eq 0 ]; then
   ok "everything checked is present and fast enough"
   printf '\n  Next, on the Pi:\n'
-  printf '    ./webrtc-video.py 192.168.0.219                       camera + mic + speaker\n'
-  printf '    ./webrtc-video.py 192.168.0.219 --size 1280x720 --encoder v4l2\n'
-  printf '    ./webrtc-video.py 192.168.0.219 --video test          videotestsrc again\n'
+  printf '    ./check-livekit.sh          the call needs more than the camera\n'
+  printf '    ./webrtc-video.py ... --dry-run    the whole pipeline, with no network\n'
+  printf '\n  The encoder timings above are the RECORDER s concern, not the call s:\n'
+  printf '  the call hands raw I420 to LiveKit and does not encode in GStreamer.\n'
 elif [ -n "$SENSOR" ]; then
   # The camera is there; whatever failed is downstream of it, so the ribbon
   # advice below would send you to take apart hardware that is working.

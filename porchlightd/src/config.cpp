@@ -64,6 +64,17 @@ class Section {
     return std::chrono::seconds(it->get<std::uint64_t>());
   }
 
+  bool bool_or(std::string_view key, bool fallback) const {
+    const auto it = find(key);
+    if (it == node_.end()) {
+      return fallback;
+    }
+    if (!it->is_boolean()) {
+      fail(key, "true or false");
+    }
+    return it->get<bool>();
+  }
+
   int int_or(std::string_view key, int fallback) const {
     const auto it = find(key);
     if (it == node_.end()) {
@@ -163,6 +174,22 @@ void validate(const Config& cfg) {
   require_positive("recorder.video_bitrate_kbps", cfg.recorder.video_bitrate_kbps);
   require_positive("spool.max_bytes", static_cast<long long>(cfg.spool.max_bytes));
 
+  require_positive("media.width", cfg.media.width);
+  require_positive("media.height", cfg.media.height);
+  require_positive("media.fps", cfg.media.fps);
+  require_positive("media.video_bitrate_kbps", cfg.media.video_bitrate_kbps);
+  require_positive("media.idle_timeout_seconds", cfg.media.idle_timeout);
+  // GStreamer pads I420 rows up to a multiple of four and LiveKit reads the
+  // planes tightly packed. They agree for any width that is a multiple of eight
+  // and can disagree otherwise, and the symptom is a picture sheared
+  // diagonally rather than an error - so it is refused here, where a config
+  // file is being read, rather than discovered by someone watching a door.
+  if (cfg.media.width % 8 != 0 || cfg.media.height % 2 != 0) {
+    throw ConfigError(
+        "media.width: expected a multiple of 8, and media.height an even number, "
+        "or the I420 rows will not line up");
+  }
+
   if (cfg.spool.path.empty()) {
     throw ConfigError("spool.path: expected a non-empty path");
   }
@@ -247,11 +274,35 @@ Config load_config(const std::filesystem::path& path) {
   cfg.recorder.video_bitrate_kbps =
       recorder.int_or("video_bitrate_kbps", cfg.recorder.video_bitrate_kbps);
 
+  const Section media = root.section("media");
+  cfg.media.python = media.string_or("python", cfg.media.python.string());
+  cfg.media.script = media.string_or("script", cfg.media.script.string());
+  cfg.media.video_source = media.one_of("video_source", cfg.media.video_source,
+                                        {"camera", "test"});
+  cfg.media.width = media.int_or("width", cfg.media.width);
+  cfg.media.height = media.int_or("height", cfg.media.height);
+  cfg.media.fps = media.int_or("fps", cfg.media.fps);
+  cfg.media.codec = media.one_of("codec", cfg.media.codec, {"h264", "vp8"});
+  cfg.media.video_bitrate_kbps =
+      media.int_or("video_bitrate_kbps", cfg.media.video_bitrate_kbps);
+  cfg.media.focus = media.string_or("focus", cfg.media.focus);
+  cfg.media.audio_source = media.one_of("audio_source", cfg.media.audio_source,
+                                        {"alsa", "test", "none"});
+  cfg.media.mic_device = media.string_or("mic_device", cfg.media.mic_device);
+  cfg.media.speaker_device = media.string_or("speaker_device", cfg.media.speaker_device);
+  cfg.media.talkback = media.bool_or("talkback", cfg.media.talkback);
+  cfg.media.echo_cancel = media.bool_or("echo_cancel", cfg.media.echo_cancel);
+  cfg.media.idle_timeout = media.seconds_or("idle_timeout_seconds", cfg.media.idle_timeout);
+  cfg.media.linger = media.seconds_or("linger_seconds", cfg.media.linger);
+
   const Section gpio = root.section("gpio");
   cfg.gpio.chip = gpio.string_or("chip", cfg.gpio.chip);
   cfg.gpio.button_line = gpio.int_or("button_line", cfg.gpio.button_line);
   cfg.gpio.motion_line = gpio.int_or("motion_line", cfg.gpio.motion_line);
   cfg.gpio.led_line = gpio.int_or("led_line", cfg.gpio.led_line);
+  cfg.gpio.button_active_low = gpio.bool_or("button_active_low", cfg.gpio.button_active_low);
+  cfg.gpio.motion_active_low = gpio.bool_or("motion_active_low", cfg.gpio.motion_active_low);
+  cfg.gpio.led_active_low = gpio.bool_or("led_active_low", cfg.gpio.led_active_low);
   cfg.gpio.debounce_ms = gpio.int_or("debounce_ms", cfg.gpio.debounce_ms);
 
   validate(cfg);

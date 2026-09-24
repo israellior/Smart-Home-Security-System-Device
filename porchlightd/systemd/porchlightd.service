@@ -9,8 +9,10 @@ Restart=on-failure
 RestartSec=2
 
 # Shutdown drains rather than stopping dead: the recorder child gets SIGINT so
-# its MP4 finishes with EOS, SIGKILL at +5s, and the daemon is out by about
-# +10s. This has to stay above that.
+# its MP4 finishes with EOS, SIGKILL at +5s, and a live call gets SIGTERM so it
+# leaves the LiveKit room instead of being killed in it - otherwise whoever is
+# watching keeps a frozen picture until the server times the participant out.
+# The daemon is out by about +10s. This has to stay above that.
 TimeoutStopSec=15
 KillSignal=SIGTERM
 

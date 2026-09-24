@@ -49,6 +49,13 @@ copy to each viewer. Both the Pi and the browsers connect *outward* to it, so no
 home router needs to accept an incoming connection and no separate TURN relay is
 required.
 
+**Decided 2026-09-22: the SFU is LiveKit Cloud.** Managed, so there is no SFU
+to run, and its access tokens already express the per-participant permissions
+this needs. Every mint goes through one interface on the app server, so moving
+to self-hosted LiveKit or to mediasoup later changes one module and no callers.
+The device holds two tokens rather than one — see `docs/server-brief.md` for
+why the split is load-bearing.
+
 **The Pi** publishes one stream, whatever the number of viewers. It never fans
 out, and its upload cost does not grow with the audience.
 
@@ -89,7 +96,6 @@ out, and its upload cost does not grow with the audience.
 
 ## Still to decide
 
-- Whether the SFU is self-hosted or a managed service.
 - The final video bitrate and resolution.
 - Whether this repository remains a learning project (`CLAUDE.md` Phase 2:
   hand-written RTP, jitter buffer, direct V4L2) or becomes the product. The two

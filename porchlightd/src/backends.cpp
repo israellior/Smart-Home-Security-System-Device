@@ -7,9 +7,14 @@
 #include "io/console_chime.h"
 #include "io/console_led.h"
 #include "io/fake_recorder.h"
+#ifdef PORCHLIGHT_GPIO
+#include "io/gpio_input.h"
+#include "io/gpio_led.h"
+#endif
 #include "io/gst_recorder.h"
 #include "io/logging_server_link.h"
 #include "io/logging_uploader.h"
+#include "io/script_media.h"
 #include "io/script_uploader.h"
 #include "io/stdin_input.h"
 #include "io/stub_media.h"
@@ -21,12 +26,29 @@ namespace {
   throw ConfigError(std::format("backends.{}: unknown backend '{}'", key, name));
 }
 
-std::unique_ptr<Led> make_led(const std::string& name) {
+#ifndef PORCHLIGHT_GPIO
+// Distinct from unknown() on purpose. "gpio" is a real backend that this binary
+// simply does not contain, and reading that as a typo costs an hour.
+[[noreturn]] void not_built_in(std::string_view key) {
+  throw ConfigError(std::format(
+      "backends.{}: \"gpio\" needs a build with -DPORCHLIGHT_GPIO=ON, and libgpiod 2.x "
+      "(apt install libgpiod-dev) to build it against",
+      key));
+}
+#endif
+
+std::unique_ptr<Led> make_led(const Config& config, [[maybe_unused]] Reactor& reactor) {
+  const std::string& name = config.backends.led;
   if (name == "console") {
     return std::make_unique<ConsoleLed>();
   }
-  // When the LED arrives:
-  //   if (name == "gpio") return std::make_unique<GpioLed>(config.gpio);
+  if (name == "gpio") {
+#ifdef PORCHLIGHT_GPIO
+    return std::make_unique<GpioLed>(reactor, config.gpio);
+#else
+    not_built_in("led");
+#endif
+  }
   unknown("led", name);
 }
 
@@ -56,9 +78,15 @@ std::unique_ptr<ClipUploader> make_uploader(const Config& config, Reactor& react
   unknown("uploader", name);
 }
 
-std::unique_ptr<MediaController> make_media(const std::string& name) {
+std::unique_ptr<MediaController> make_media(const Config& config, Reactor& reactor,
+                                            const EventSink& sink) {
+  const std::string& name = config.backends.media;
   if (name == "stub") {
     return std::make_unique<StubMedia>();
+  }
+  if (name == "script") {
+    return std::make_unique<ScriptMedia>(reactor, sink, config.server, config.media,
+                                         config.device_id);
   }
   unknown("media", name);
 }
@@ -78,10 +106,10 @@ std::unique_ptr<Recorder> make_recorder(const Config& config, Reactor& reactor,
 
 Hardware make_hardware(const Config& config, Reactor& reactor, const EventSink& sink) {
   Hardware hardware;
-  hardware.led = make_led(config.backends.led);
+  hardware.led = make_led(config, reactor);
   hardware.chime = make_chime(config, reactor);
   hardware.uploader = make_uploader(config, reactor, sink);
-  hardware.media = make_media(config.backends.media);
+  hardware.media = make_media(config, reactor, sink);
   hardware.recorder = make_recorder(config, reactor, sink);
 
   // The fake link is the only one whose connectivity can be driven by hand, so
@@ -105,9 +133,13 @@ Hardware make_hardware(const Config& config, Reactor& reactor, const EventSink& 
 
   if (config.backends.input == "stdin") {
     hardware.input = std::make_unique<StdinInput>(reactor, sink, std::move(link));
+  } else if (config.backends.input == "gpio") {
+#ifdef PORCHLIGHT_GPIO
+    hardware.input = std::make_unique<GpioInput>(reactor, sink, config.gpio);
+#else
+    not_built_in("input");
+#endif
   } else {
-    // When the button and the PIR arrive:
-    //   if (name == "gpio") return std::make_unique<GpioInput>(reactor, sink, config.gpio);
     unknown("input", config.backends.input);
   }
 

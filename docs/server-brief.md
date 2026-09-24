@@ -46,9 +46,11 @@ What it already does, and you do not need to reimplement:
 - An LED priority order, a chime that plays even when you are unreachable
 - A bounded offline alert queue with exponential backoff
 
-**`webrtc-video.py`** — a GStreamer WebRTC client on the same Pi, separate
-process. Video plus two-way Opus audio, currently one browser at a time over a
-LAN. It keeps its **own** WebSocket to signaling.
+**`webrtc-video.py`** — the live call, on the same Pi, a separate process that
+`porchlightd` starts. Camera and microphone up, a viewer's microphone back down
+to the speaker, with echo cancellation between them because they are one sound
+card. **It has no WebSocket to you.** It POSTs for its two LiveKit tokens with
+the device credential and negotiates with LiveKit directly.
 
 **`server.js`** — a LAN-only signaling stub with no auth. It stays in the
 device repo as a development tool. **You are replacing it**, not extending it.
@@ -110,13 +112,24 @@ ever. Do not make the upload depend on the event record existing.
 { "type": "viewer-requested", "peer": 7 }
 ```
 
-The device stops any recording first, then hands the call to
-`webrtc-video.py`. The SDP answer travels on **that script's own socket**, not
-this one.
+The device stops any recording first — the camera and the sound card go to one
+process at a time and the recorder holds both — and then starts
+`webrtc-video.py`, which fetches its two tokens and joins the room.
 
-Superseded in part by the LiveKit decision below: there is no SDP on any
-socket of ours now. The cue itself is unchanged — `viewer-requested` still
-means stop recording and bring up the call.
+**Nothing comes back on this socket, for this message, ever.** There is no SDP
+on it in either direction, no ack, and no "call ended". The device decides when
+the call is over, from the room, and simply stops publishing.
+
+**`peer` is never sent anywhere.** The device keeps it only to know which
+viewer a later internal `CallEnded` belongs to. Send whatever identifies the
+viewer to you; the device treats it as an opaque string and a JSON number is
+fine.
+
+**Send it once per viewer.** A second one while a call is already up is a
+no-op on the device, which is correct: the Pi publishes one stream and LiveKit
+copies it out. You do not need to suppress them, and you do not need to send
+one when a second viewer joins a call that is already running — though it costs
+nothing if you do.
 
 ### Clip upload
 
@@ -242,16 +255,20 @@ side, so if any of it is wrong for your storage — a field you need in the step
 body, a different confirm shape — say so now rather than after both ends are
 built.
 
-## A trap in the existing signaling
+## The roles, and a trap that has now closed
 
-`server.js` treats a second `hello` with `role: 'pi'` as a replacement and
-closes the first socket. `webrtc-video.py` already signs in that way. Anything
-else is currently filed as `'browser'`.
+**The device holds exactly one socket, and `porchlightd` holds it**, as
+`role: 'device'`: one per `deviceId`, replacing its own predecessor, never a
+signaling target for an offer.
 
-So **the daemon needs a third role** — `role: 'device'` is the proposal: one
-per `deviceId`, replaces its own predecessor, and is never a signaling target
-for an offer. If you give it `'pi'`, it will kick the media script off its
-socket every time it reconnects.
+The earlier issue of this brief warned that giving the daemon `'pi'` would kick
+the media script off its socket on every reconnect. That cannot happen any
+more, because **the media script no longer has a socket**. The `'pi'` role has
+no client on the device at all now and you can drop it if you have one.
+
+What has not changed is that **only `device` may send events**, and that from
+any other role they must be *silently ignored* rather than rejected — silence
+is your transient-failure signal, and the device retries into it forever.
 
 ## Media — LiveKit Cloud
 
@@ -323,10 +340,52 @@ The viewer token has its own user-authenticated endpoint and is not the
 device's concern.
 
 **What this means for `webrtc-video.py`.** SDP no longer crosses the signaling
-socket in either direction — the LiveKit SDK negotiates directly with LiveKit.
-The script still keeps its own connection, but to LiveKit rather than to us;
-what it needs from us is a token. `viewer-requested` on the ServerLink is
-unchanged: it is the cue to stop recording and join the room, not an offer.
+socket in either direction, and the script no longer has a socket to us at all.
+It POSTs for both tokens with the device credential and negotiates with LiveKit
+directly. `viewer-requested` on the ServerLink is unchanged: it is the cue to
+stop recording and join the room, not an offer.
+
+### What the device does with the two tokens — and what the viewer app must know
+
+Both endpoints are called on **every connection attempt**, never cached: a
+token is needed to join and for nothing afterwards, so one that went stale
+while the Pi was offline is simply never used again. A reconnect mid-call mints
+fresh ones. There is nothing to refresh and nothing to invalidate.
+
+**The device joins the room twice, so it appears as two participants:**
+
+| identity | publishes | subscribes |
+|---|---|---|
+| `device:<id>:pub` | camera + microphone | nothing — `canSubscribe: false` |
+| `device:<id>:sub` | **nothing at all** | viewers' microphones |
+
+That is the direct consequence of splitting the tokens, and it is right — but
+it has one consequence outside the device:
+
+**The viewer app must not treat `device:<id>:sub` as a publisher that has gone
+quiet.** It joins, publishes nothing, ever, and stays for the whole call. A UI
+that shows "Waiting for the camera…" until *some* participant publishes will
+clear correctly; one that waits on *every* remote participant to publish will
+wait forever. Key the live view on the `:pub` identity, or on a video track,
+not on participant count.
+
+The device applies the mirror image of this rule to decide when the call is
+over: it counts participants whose identity does **not** start with `device:`,
+and stops publishing a few seconds after the last one leaves.
+
+Three notes on the token shape, none of them blocking:
+
+- **`canPublishData: false` on both.** Nothing on the device wants a data
+  channel, so this is right. It does mean there is no in-band way for a viewer
+  to tell the Pi anything — if that is ever wanted, it has to come through you.
+- **`nbf` is the mint time**, which puts it very slightly in LiveKit's future.
+  go-jose's default leeway is a minute so it is harmless, but it does make the
+  app server's clock load-bearing: if it ever drifts ahead by more than that,
+  every token is rejected as not-yet-valid and nothing says why.
+- **No `canPublishSources` on the device publisher**, so it could publish a
+  screen share if it were ever asked to. Viewers are constrained to
+  `["microphone"]` and the device is not constrained at all. Not worth
+  changing unless you want the symmetry.
 
 ## Settled — treat as given
 

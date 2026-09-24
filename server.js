@@ -1,11 +1,17 @@
 'use strict';
 
-// Signaling for the Pi intercom.
+// The development server: static files, and the Pi's scripts by name.
 //
-// The Pi and a browser both connect to /ws, swap an offer, an answer and a
-// handful of ICE candidates through here, and then send RTP straight to each
-// other. **No media ever passes through this process** - once the handshake is
-// done you could stop this server and the call would continue.
+// Its other half is a signaling switchboard - /ws, an offer, an answer and a
+// handful of ICE candidates - and **nothing uses it any more**. The live call
+// moved to LiveKit, so webrtc-video.py exchanges no SDP with anybody: it asks
+// the app server for a token over HTTPS and negotiates with LiveKit directly.
+// public/webrtc.html is the only remaining client, and it has no Pi to answer
+// it. Both are kept because tools/signal-test.js still exercises the protocol
+// and because the shape of it is the thing the app server replaced.
+//
+// What is still load-bearing is the list below: it is how the Pi gets its
+// scripts, since there is no git clone on the Pi.
 
 const http = require('node:http');
 const os = require('node:os');
@@ -21,7 +27,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // So the Pi can fetch its scripts: curl -fO http://SERVER_IP:3000/webrtc-video.py
 // Add any new Pi script to this list or it cannot be fetched.
 for (const script of [
-  'check-audio.sh', 'check-camera.sh', 'fix-wm8960.sh',
+  'check-audio.sh', 'check-camera.sh', 'check-livekit.sh', 'fix-wm8960.sh',
   'webrtc-video.py', 'server-bridge.py', 'upload-clip.py',
 ]) {
   app.get(`/${script}`, (req, res) =>
@@ -156,9 +162,9 @@ server.listen(PORT, () => {
     .filter((a) => a && a.family === 'IPv4' && !a.internal)
     .map((a) => a.address);
 
-  console.log(`Pi intercom signaling on port ${PORT}`);
-  // localhost, not the LAN address: getUserMedia needs a secure context and
-  // localhost is one, so talking back only works from this machine.
-  console.log(`  browser:  http://localhost:${PORT}/webrtc.html`);
+  console.log(`Pi intercom dev server on port ${PORT}`);
+  // The signaling half has no Pi on the other end any more - see the top of
+  // this file - so what this is actually for is the line below it.
+  console.log(`  browser:  http://localhost:${PORT}/webrtc.html   (no Pi answers this now)`);
   for (const host of lanHosts) console.log(`  pi side:  curl -fO http://${host}:${PORT}/webrtc-video.py`);
 });
