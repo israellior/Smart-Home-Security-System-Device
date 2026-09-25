@@ -58,8 +58,10 @@ to the speaker, with echo cancellation between them because they are one sound
 card. **It has no WebSocket to you.** It POSTs for its two LiveKit tokens with
 the device credential and negotiates with LiveKit directly.
 
-**`server.js`** — a LAN-only signaling stub with no auth. It stays in the
-device repo as a development tool. **You are replacing it**, not extending it.
+**`server.js`** — a LAN-only signaling stub with no auth, which you replaced.
+It was deleted from the device repo on 2026-09-25, along with the browser page
+and the fake peers that spoke to it. Nothing on the device side speaks that
+protocol any more.
 
 ## The contract the device already implements
 

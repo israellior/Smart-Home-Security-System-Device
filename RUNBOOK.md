@@ -98,9 +98,9 @@ node scripts/watch-room.mjs --device porch-1   # who is in the LiveKit room
 
 `watch.mjs` should flip `porch-1` to `ONLINE` the moment the daemon connects.
 
-The dev file server in this repo (`npm start`, :3000) is **not** part of
-running the system. It exists only so the Pi can `curl` scripts and the
-`porchlightd` tarball, and is needed only when you change one of those.
+The dev file server that used to hand the Pi its scripts and the `porchlightd`
+tarball was deleted on 2026-09-25. Nothing in this repository runs on the
+server host any more; changed files reach the Pi by `scp`.
 
 ---
 

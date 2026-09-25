@@ -49,7 +49,7 @@ else — there is still no git repository (open problem 2).
 
 The five-step plan below is finished, and then the ground moved: the call does
 not negotiate with a browser any more. It publishes to **LiveKit Cloud**, and
-the viewer is the app rather than `public/webrtc.html`.
+the viewer is the app rather than a page served from here.
 
 | Step | What | Status |
 |---|---|---|
@@ -623,7 +623,8 @@ hand-run recon that used to be listed here, because the recon and the cleanup ha
 to agree about what they found.
 
 ```bash
-curl -fO http://192.168.0.219:3000/fix-wm8960.sh && chmod +x fix-wm8960.sh
+scp pi/fix-wm8960.sh israellior1@192.168.0.129:   # nothing serves it any more
+chmod +x fix-wm8960.sh
 ./fix-wm8960.sh              # survey. Read-only, and the default.
 sudo ./fix-wm8960.sh --apply # then: sudo reboot
 sudo ./fix-wm8960.sh --restore   # if the card is worse afterwards
@@ -658,27 +659,33 @@ reaches `main` when it is confirmed working.
 `getUserMedia` still refuses outside a secure context, but nothing on this side
 calls it: the Pi does not use a browser, and the viewer is the app, which is
 served over HTTPS by the app server. This was only ever a constraint on
-`public/webrtc.html`, which no longer has a Pi to talk to.
+`public/webrtc.html`, which was deleted on 2026-09-25.
 
-It is recorded because the reasoning still applies to any future dev page:
-**`http://localhost` is already a secure context**, with no certificate
-anywhere, so a page served to the machine it runs on needs no HTTPS at all.
-`webrtc.html` checks `window.isSecureContext` on load and says so in a banner
-rather than letting the permission call fail with a bare error.
+It is recorded because the reasoning applies to the **device's own setup page**,
+which is the next thing to be built: a page the doorbell serves over plain HTTP
+on its own access point, to be given a Wi-Fi password. **`http://localhost` is a
+secure context and `http://192.168.4.1` is not**, so anything on that page that
+needs a secure context — `getUserMedia`, `crypto.subtle` — will refuse, and it
+has to be designed around rather than discovered. A form post is fine; a QR
+scanner in the browser is not.
 
-**4. Restart the server after pulling changes.** A long-running `node server.js`
-keeps serving the old code, including the old `/ws` handler with no signaling.
+**4. ~~Restart the server after pulling changes.~~ There is no dev file server
+any more, and nothing replaced it.** `server.js` went on 2026-09-25 with the
+rest of the LAN stub, so the Pi's scripts and the daemon's tarball arrive by
+`scp` and by nothing else. That is a gap rather than a decision: a shipped
+device cannot be updated by hand at all, and the answer is the factory image
+and an updater, neither of which exists.
 
-**The Pi's `curl` fails three different ways, and the symptom tells them apart.**
-Reading one as another costs an hour:
+**What survives is how a connection to the server host fails**, because the app
+server on :4000 is reached the same way and the symptoms still tell the causes
+apart. Reading one as another costs an hour:
 
 | What you see | What it is |
 |---|---|
-| fast `404` | the server is running old code, or the script is not in `server.js`'s list |
-| fast connection refused | the server is not running — `npm start` |
+| fast connection refused | nothing is listening — the server is not running |
 | **hangs, 0 bytes, no error** | nothing answers the SYN: the Windows firewall, see "The server host" |
 
-A hang is never a stale route. Check `Get-NetTCPConnection -LocalPort 3000
+A hang is never a wrong path. Check `Get-NetTCPConnection -LocalPort 4000
 -State Listen` on the server host first: if something *is* listening and the Pi
 still hangs, it is the firewall profile every time.
 
@@ -761,14 +768,10 @@ porchlightd/            The C++20 doorbell daemon, with its own README and its o
                         owns the timer that blinks it; src/io/led_patterns.h is
                         the blink table, free of libgpiod so the tests can read
                         it on a machine with no GPIO. All behind -DPORCHLIGHT_GPIO.
-server.js               Express + ws. The dev server: it serves the Pi's scripts by
-                        name, which is load-bearing, and a signaling switchboard
-                        that nothing uses any more, which is not.
-public/webrtc.html      The Steps 1-3 viewer, and now an orphan: no Pi answers its
-                        request-offer. Kept because it is what the app replaced.
-public/porchlightd.tar.gz   Not tracked. `git archive` output, so the Pi can curl
-                        the daemon's source - it has no clone. Stale by default:
-                        regenerate it after every change. See Conventions.
+public/porchlightd.tar.gz   Not tracked. `git archive` output, so the daemon's
+                        source can reach the Pi - it has no clone. Stale by
+                        default: regenerate it after every change. Nothing
+                        serves it any more; it is scp'd. See Conventions.
 pi/webrtc-video.py      The live call. Camera and mic into LiveKit under a publisher
                         token, a viewer's mic back out of the speaker under a
                         listener token, webrtcdsp between them. No SDP, no socket
@@ -798,30 +801,35 @@ pi/check-livekit.sh     The same for the call: the venv and the SDK, the GStream
 pi/fix-wm8960.sh        Surveys Waveshare's installer and undoes it reversibly.
                         --apply moves files to /var/backups/wm8960-fix, --restore
                         puts them back. Refuses to act on anything ambiguous.
-tools/signal-test.js    Fake WebRTC peer, either role. Speaks signaling, no media.
-                        The way to test server.js on its own - which matters more,
-                        not less, once it grows rooms and auth (see DESIGN.md).
-tools/clip-stub.js      The app server's clip endpoints and a bucket, faked - and
-                        the ways they fail, which a real server will not do on
-                        request. --fail / --fail-once / --expire-after.
 ```
 
-`server.js` serves `pi/*` scripts by name (`/check-audio.sh`, `/check-camera.sh`,
-`/check-livekit.sh`, `/fix-wm8960.sh`, `/webrtc-video.py`, `/server-bridge.py`,
-`/upload-clip.py`) so the Pi can `curl -fO` them. **Add new Pi scripts to that
-list** or the Pi gets a fast 404 and no explanation.
+**The LAN development stub was deleted on 2026-09-25**: `server.js`, which
+served the Pi's scripts by name and ran a signaling switchboard nothing used;
+`public/webrtc.html`, the Steps 1-3 viewer that no Pi had answered since the
+call moved to LiveKit; `tools/signal-test.js`, the fake peer for exercising
+that switchboard; and `tools/clip-stub.js`, the faked clip endpoints. All four
+are in the git history and nothing in the tree is Node any longer —
+`package.json` still declares express, `ws` and a `start` script for a file
+that is gone.
+
+What went with them is the **delivery mechanism**: nothing serves `pi/*` or the
+tarball, so both reach the Pi by `scp`. For a device that ships to somebody's
+house that was never going to be the answer anyway; the factory image and an
+updater are, and neither exists yet.
 
 ## The signaling protocol
 
-**This is the *development* protocol, and the device no longer speaks it.** It
-is what `server.js`, `public/webrtc.html` and `tools/signal-test.js` share, and
-nothing else. The protocol the Pi actually speaks to the real app server is in
+**This is the *development* protocol. Nothing in this repository speaks it any
+more, and nothing implements it either** — `server.js`, `public/webrtc.html` and
+`tools/signal-test.js` were the three sides of it and all three were deleted on
+2026-09-25. The protocol the Pi actually speaks to the real app server is in
 [porchlightd/docs/protocol.md](porchlightd/docs/protocol.md): one socket, held
 by the daemon as `role: "device"`, carrying alerts out and `viewer-requested`
 in, and no SDP in either direction.
 
-It is kept because Phase 2 means writing this layer by hand again, and because
-`signal-test.js` is still the way to exercise a switchboard without media.
+It is written down here because Phase 2 means writing this layer by hand again,
+and because the shapes below are what the hand-negotiated version used. Treat
+it as a record, not as an interface: there is no code behind it.
 
 All JSON text frames on `/ws`. **The server never parses SDP or candidates** —
 it assigns ids, remembers which socket is the Pi, and forwards by `to`, stamping `from`.
@@ -853,7 +861,7 @@ the description to `set-local-description`. That call empties the Python wrapper
 in later steps.
 
 **No STUN or TURN.** Both machines are on one LAN, so ICE host candidates are enough.
-`iceServers: []` in `public/webrtc.html` is deliberate.
+`iceServers: []` in the page was deliberate.
 
 **Two media, one connection.** `bundle-policy=max-bundle` puts both m-lines on one
 ICE transport and one UDP port pair, so there is a single candidate pair to watch
@@ -863,21 +871,18 @@ is what lets it hold the two tracks together.
 
 ## Running it
 
-```
-npm start                                  # server on :3000, or PORT=3100 npm start
-node tools/signal-test.js --role pi        # fake peers, to test signaling alone
-node tools/signal-test.js
-node tools/clip-stub.js --out ./received   # the app server's clip endpoints, faked
-```
+Nothing from this repository runs on the server host any more — the app
+server is a separate project, and `RUNBOOK.md` is what starts it.
 
 On the Pi. **`pi/provision.sh --apply` does everything below**, and checks it;
 what follows is the same list by hand, which is what to read when one step of
-it fails. There is no git clone there, so everything arrives by `curl`:
+it fails. There is no git clone there and nothing serves the files any more, so
+the tree arrives by `scp`:
 
 ```bash
-for f in check-audio.sh check-camera.sh check-livekit.sh fix-wm8960.sh webrtc-video.py; do
-  curl -fO "http://192.168.0.219:3000/$f" && chmod +x "$f"
-done
+git archive --format=tar.gz --prefix=porchlight/ HEAD -o /tmp/porchlight.tar.gz
+scp /tmp/porchlight.tar.gz israellior1@192.168.0.129:
+# then on the Pi: tar xzf porchlight.tar.gz && cd porchlight
 ```
 
 The LiveKit SDK is a pip package and `python3-gi` is an apt one, so the call
@@ -932,10 +937,10 @@ cannot play while a call is up, which is a real gap and not yet solved.
 
 `--mic-device` and `--speaker-device` both default to `hw:CARD=wm8960soundcard`.
 
-**`public/webrtc.html` no longer has anything to talk to.** It still loads and
-still asks for an offer, and no Pi will ever answer: the call publishes to
-LiveKit and the viewer is the app. It is kept as the record of what Steps 1–3
-were.
+**The Steps 1–3 viewer is gone.** `public/webrtc.html` asked a Pi for an offer,
+and no Pi has answered since the call moved to LiveKit; it was deleted on
+2026-09-25 with the rest of the stub. The git history is the record of what
+those steps were.
 
 ## Conventions
 
@@ -974,7 +979,7 @@ were.
   ```
 
   ```bash
-  cd ~ && curl -fO http://192.168.0.219:3000/porchlightd.tar.gz
+  scp public/porchlightd.tar.gz israellior1@192.168.0.129:   # nothing serves it
   tar xzf porchlightd.tar.gz && cd porchlightd
   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j4
   ctest --test-dir build --output-on-failure
@@ -994,7 +999,9 @@ were.
 
   It fetches nothing over HTTP itself, deliberately: however the tree arrived
   — tarball, scp or clone — is not its business.
-- Node 24, so the global `WebSocket` is available in `tools/signal-test.js`.
+- **Nothing here is Node any more.** The last of it went with the LAN stub on
+  2026-09-25. `package.json` and `node_modules/` are still in the tree and
+  describe a `server.js` that is not.
 
 ## Keeping this file current
 

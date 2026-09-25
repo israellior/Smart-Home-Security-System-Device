@@ -210,15 +210,15 @@ when the person was at the door.
 
 Both Python halves live in `/usr/local/lib/porchlight/` — `server-bridge.py`
 for the socket and `upload-clip.py` for the clips, named by `server.bridge_path`
-and `server.uploader_path`. `server.js` serves both by name, so the Pi fetches
-them the same way it fetches everything else:
+and `server.uploader_path`. [`pi/provision.sh`](../pi/provision.sh) installs
+both, along with `webrtc-video.py`; by hand it is:
 
 ```bash
-cd /usr/local/lib/porchlight
-sudo curl -fO http://192.168.0.219:3000/server-bridge.py
-sudo curl -fO http://192.168.0.219:3000/upload-clip.py
-sudo chmod +x server-bridge.py upload-clip.py
+sudo install -m 0755 pi/server-bridge.py pi/upload-clip.py /usr/local/lib/porchlight/
 ```
+
+The dev file server that used to hand these to the Pi over `curl` was deleted
+on 2026-09-25, so the tree gets there by `scp` and nothing else.
 
 Set your own settings in `/etc/porchlight/porchlightd.json` rather than editing
 the tracked example, or every `git pull` will fight you.
@@ -344,8 +344,12 @@ directory — the core is the only thing that knows which clips are still owed t
 the server, and a sweep would eventually delete the file underneath a running
 upload. Oldest first, and never the one in flight.
 
-**Verified against [`tools/clip-stub.js`](../../tools/clip-stub.js), not
-against the real server** — see below. What is left:
+**First verified against a stub, and since confirmed against the real server**:
+a clip records, uploads, confirms and plays in the app. `tools/clip-stub.js`,
+which faked the three endpoints and — more usefully — the ways they fail, was
+deleted on 2026-09-25 with the rest of the LAN stub; it is in the git history,
+and what it did that a real server will not do on request was
+`--fail`, `--fail-once` and `--expire-after`. What is left:
 
 1. **A startup rescan** of the spool. Still deferred, and it needs a way to
    inject a found clip back into the core. Until it exists, a clip whose daemon
@@ -357,23 +361,15 @@ against the real server** — see below. What is left:
    an outcome the uploader can report as permanent, the way alerts already
    distinguish a rejection from a failure.
 
-**The real `/api/clips/...` endpoints return 404 today.** The shapes are agreed
-and still free to move; [`docs/server-brief.md`](../../docs/server-brief.md) is
-what the other side is building from.
+**The real `/api/clips/...` endpoints exist and work.**
+[`docs/server-brief.md`](../../docs/server-brief.md) is the contract they were
+built to, and [`docs/app-server-changes.md`](../../docs/app-server-changes.md)
+is what still has to change there.
 
-### Running it against the stub
-
-The stub is the three endpoints and a bucket, and — more usefully — the ways
-they fail, which a real server will not do on request.
-
-```bash
-node tools/clip-stub.js --out ./received     # on the server host
-node tools/clip-stub.js --fail-once confirm  # the retry is the interesting case
-node tools/clip-stub.js --fail confirm       # nothing ever finishes
-```
-
-Then point `server.base_url` at it. A confirmed clip disappears from the spool
-and appears under `--out`, with its sidecar as the server received it.
+What no longer exists is a way to exercise the *failure* paths on demand — a
+real server will not return a 500 on the confirm because you asked it to. Until
+something replaces the stub, the way to see a retry is to stop the app server
+mid-upload.
 
 ## The chime
 

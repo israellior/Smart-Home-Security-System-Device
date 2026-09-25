@@ -1,9 +1,9 @@
 # Device protocol
 
 What `porchlightd` needs from the app server, and what it now speaks to a real
-one. `server.js` is **not** that server: it has no event message and no upload
-endpoint, and never will — it is the LAN development stub. The real app server
-implements everything below.
+one. The LAN development stub, `server.js`, was never that server — it had no
+event message and no upload endpoint — and it was deleted on 2026-09-25. The
+real app server implements everything below.
 
 Two channels, because they have different failure modes:
 
