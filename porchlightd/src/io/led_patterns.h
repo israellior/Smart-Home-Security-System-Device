@@ -25,6 +25,13 @@ struct LedPhase {
 //
 // Kept out of gpio_led.cpp, and free of libgpiod, so that the table is checked
 // by the tests on a machine with no GPIO - which is every machine here.
+//
+// Two more patterns exist and are not in this enum, because this daemon can
+// never show them: pi/porchlight-setup.py holds the GPIO line before
+// porchlightd starts, and has its own "waiting for setup" (even, 1 Hz) and
+// "joining your network" (5 Hz). It reuses this file's Fault shape verbatim
+// for a setup that failed, because it means the same thing in both places. The
+// whole vocabulary a customer can see is those two plus the seven below.
 inline std::span<const LedPhase> led_phases(LedPattern pattern) {
   using namespace std::chrono_literals;
 

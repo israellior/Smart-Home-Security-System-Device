@@ -64,6 +64,7 @@ the viewer is the app rather than a page served from here.
 | — | `porchlightd` starts the call for real | **written 2026-09-22 — never run on the Pi** |
 | — | The button, the PIR and the LED on real GPIO | **written 2026-09-23 — never run on the Pi** |
 | — | Provisioning, and a link that comes and goes | **written 2026-09-25 — never run on the Pi** |
+| — | A device that ships: identity at the factory, wi-fi from a phone | **written 2026-09-25 — never run on the Pi** |
 
 ### Read this first: nothing after Step 5 has run on hardware
 
@@ -357,6 +358,86 @@ real backend, so it names files. The two that are not optional: **4002 means a
 site visit**, so nothing transient may ever use it; and **a minted viewer token
 is not proof a call started**, because a frame can be written into a half-open
 socket for up to thirty seconds.
+
+### A device that ships, and the two programs that make it one
+
+**Written 2026-09-25. None of it has run on a Pi, and the half that needs a
+radio cannot be run anywhere else.**
+
+The device is being built to go to customers, which invalidated the way it was
+provisioned and nothing else. The credential model survives intact — per
+device, hashed on the server, shown once — and what changed is that no human
+types it.
+
+**One image, and a birth certificate.** Every unit is flashed from the same
+image. What makes a unit itself is one file on the FAT boot partition, written
+by the production line after flashing, because FAT is the only partition a
+laptop can write without help:
+
+```json
+/boot/firmware/porchlight.json
+{ "deviceId": "porch-1", "credential": "pl_porch-1_...",
+  "url": "https://...", "name": "Front Door", "claimCode": "7K2M9P",
+  "setupSsid": "Porchlight-7K2M", "setupPassword": "..." }
+```
+
+`porchlight-firstboot.py` moves the credential to `/etc/porchlight/credential`
+at 0600 owned by `porchlight`, writes the non-secret half to `identity.json`
+for the setup page, patches `device_id` and `server.base_url` into
+`porchlightd.json`, sets the hostname, and then **overwrites and removes the
+file from the boot partition** — which is best effort on a wear-levelled card,
+and the honest reason it is safe is that the credential is revocable by
+re-minting, not that the bytes are gone.
+
+It **checks the credential names this device** (`pl_<deviceId>_`) before
+installing anything. Minting fifty cards is exactly where two rows get crossed,
+and the alternative is finding out as close code 4002 at somebody's house.
+
+**Wi-fi comes from a phone.** `porchlight-setup.py` runs before the daemon at
+every boot. Connected already? It exits and is never noticed. Not connected? It
+becomes a WPA2 access point, serves a page, takes an SSID and a password,
+joins, and verifies. Three things about it are rules rather than details:
+
+- **Scan before the access point.** One radio cannot be an access point and
+  look for networks at the same time, so the SSID list is captured while the
+  device is still a client and cached for the page. Get this backwards and the
+  page has nothing to offer.
+- **The phone loses the device the moment it tries.** Joining means dropping the
+  access point the phone is on, so the POST answers *before* anything happens
+  and the outcome is remembered for when the customer comes back. A reply
+  written after the radio moves reaches nobody.
+- **Wait before deciding.** At boot NetworkManager takes seconds to associate.
+  A device that gave up after two would raise an access point in a house whose
+  wi-fi works, and never join it again — nobody has any reason to come and tell
+  it anything. So: saved profiles means wait (45 s); no saved profiles means
+  there is nothing to wait for.
+
+**Verification is staged on purpose**: link, then DNS, then
+`GET /api/devices/<id>/self`. A wrong password, a network with no internet and a
+network that cannot reach Porchlight are three different things for a customer
+to do about, and "could not connect" is none of them. A TLS failure with an
+implausible clock is reported as the clock, because a Pi has no battery and
+that failure otherwise reads as a broken network.
+
+**The LED is the only output while the phone is elsewhere.** The setup service
+holds the GPIO line and porchlightd starts only when it exits `Before=`, no
+IPC. Two patterns live in the Python and nowhere else, cross-referenced from
+`led_patterns.h` so the whole vocabulary is readable in one place.
+
+**What can be tested here, and what cannot.** `pi/tests/firstboot-drill.sh` is
+27 checks over every path of firstboot, and passes — it only writes files.
+`pi/tests/setup-drill.sh` drives the whole setup flow against `--fake-nm`, a
+pretend radio, and passes: the page, the captive-portal probes, a refused
+password coming back as a sentence, and a good one ending the process with exit
+0. **`nmcli`, the access point, the scan ordering, the dnsmasq redirect and the
+LED are not tested by anything and cannot be** on a machine with no radio.
+
+Everything the app server has to change for this is in
+[docs/app-server-changes.md](docs/app-server-changes.md), and the one with a
+security consequence is **A6: the claim code is not the share code.** A share
+code is permanent and a doorbell is bolted to the outside of a house; anyone
+who photographs the sticker could otherwise join it to their own account
+forever.
 
 ### A healthy run
 
@@ -783,12 +864,30 @@ pi/server-bridge.py     porchlightd's WebSocket to the app server, as a child
                         the socket - a network can carry one and drop the other.
 pi/upload-clip.py       One clip, in three steps - signed url, PUT, confirm. Judged
                         by its exit code alone; only the confirm earns a 0.
+pi/porchlight-firstboot.py
+                        One image becomes one doorbell. Reads the birth
+                        certificate off the FAT boot partition, installs the
+                        credential 0600, patches device_id and base_url into
+                        porchlightd.json, sets the hostname, destroys the file.
+                        Idempotent; exit 2 means the card was never minted.
+pi/porchlight-setup.py  Wi-fi from a phone. If the device is on no network it
+                        becomes one - WPA2 access point, captive portal, a page
+                        that lists what it scanned *before* the AP came up -
+                        takes an SSID and a password, joins, and verifies in
+                        stages so a wrong password and a network with no
+                        internet are different sentences. Owns the LED until it
+                        exits, which is when porchlightd starts.
+pi/systemd/             The two units for those two, ordered before the daemon.
+pi/tests/               Shell drills for both, no Pi needed. firstboot-drill.sh
+                        looks at the files; setup-drill.sh drives the whole flow
+                        against --fake-nm, a pretend radio.
 pi/provision.sh         A fresh Pi to a connected doorbell, in one pass: packages,
                         user, venv, scripts, config, credential, unit - then the
                         three proofs, and it will not enable the service until
                         they pass. Surveys by default like fix-wm8960.sh; --apply
                         acts, --verify runs only the proofs. Never takes the
-                        credential as an argument.
+                        credential as an argument. --image is the factory
+                        build: enable the boot units, expect no credential.
 pi/check-audio.sh       Read-only hardware audit: card, driver conflicts, mixer, a real
                         recording with levels, GStreamer elements, Python bindings.
 pi/check-camera.sh      The same for the camera: overlay, sensor driver, what

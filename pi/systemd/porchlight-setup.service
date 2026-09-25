@@ -1,0 +1,34 @@
+[Unit]
+Description=Porchlight setup: join a network, or become one
+Documentation=file:/usr/local/lib/porchlight/porchlight-setup.py
+Wants=NetworkManager.service
+After=NetworkManager.service porchlight-firstboot.service
+
+# porchlightd waits for this to finish, whichever way it finishes. Ordering
+# only, never Requires: a setup that fails must still let the daemon start, so
+# that the chime works and the LED can say something.
+#
+# It is also what hands over the GPIO line. Only one process can hold it, and
+# this one drives the LED for as long as it runs.
+Before=porchlightd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/porchlight/porchlight-setup.py
+
+# It waits for a person, so there is no honest number to put here. The default
+# 90 seconds would kill the access point while somebody was still typing their
+# wi-fi password into it.
+TimeoutStartSec=infinity
+
+# Root, deliberately: it binds port 80, drives NetworkManager and holds a GPIO
+# line. It is also the one part of the device that talks to a stranger's phone,
+# so it stays as small as it can and touches nothing else.
+User=root
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

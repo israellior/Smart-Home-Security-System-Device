@@ -31,18 +31,22 @@ URL=""
 DEVICE=""
 APPLY=0
 VERIFY_ONLY=0
+IMAGE=0
 CRED_FILE=""
 SOURCE=""
 
 usage() {
   cat >&2 <<'USAGE'
-usage: provision.sh --url URL --device-id ID [--apply] [--verify]
+usage: provision.sh --url URL --device-id ID [--apply] [--verify] [--image]
                     [--credential-file PATH] [--source DIR]
 
   --url               the app server, e.g. https://porchlight.example
   --device-id         this doorbell's slug, e.g. porch-1
   --apply             carry out the changes (the default only reports)
   --verify            skip installation; run the three proofs and exit
+  --image             building a factory image: enable the boot units, and
+                      expect no credential and no network - a unit is not
+                      minted yet and must not be
   --credential-file   read the credential from here instead of prompting
   --source            the source tree (default: the parent of this script)
 USAGE
@@ -57,12 +61,19 @@ while [ $# -gt 0 ]; do
     --source) SOURCE=${2:-}; shift 2 ;;
     --apply) APPLY=1; shift ;;
     --verify) VERIFY_ONLY=1; shift ;;
+    --image) IMAGE=1; shift ;;
     -h|--help) usage ;;
     *) printf 'unknown option: %s\n' "$1" >&2; usage ;;
   esac
 done
 
 [ -n "$URL" ] || usage
+# A factory image has no device id of its own - that arrives on the boot
+# partition, one card at a time. It still needs the url baked into the config
+# it ships, because firstboot only overwrites what the certificate carries.
+if [ "$IMAGE" -eq 1 ] && [ -z "$DEVICE" ]; then
+  DEVICE="unminted"
+fi
 [ -n "$DEVICE" ] || usage
 
 if [ -z "$SOURCE" ]; then
@@ -131,13 +142,17 @@ if [ -r /etc/os-release ]; then
 fi
 info "source tree $SOURCE"
 info "app server $URL, device $DEVICE"
+if [ "$IMAGE" -eq 1 ]; then
+  info "building a factory image: the boot units will be enabled, and neither"
+  info "a credential nor a reachable server is expected."
+fi
 if [ "$APPLY" -eq 1 ]; then
   info "applying"
 else
   info "survey only - nothing here changes the machine. Add --apply."
 fi
 
-for needed in pi/server-bridge.py pi/upload-clip.py pi/webrtc-video.py; do
+for needed in pi/server-bridge.py pi/upload-clip.py pi/webrtc-video.py               pi/porchlight-firstboot.py pi/porchlight-setup.py; do
   [ -f "$SOURCE/$needed" ] || bad "$SOURCE/$needed is missing - wrong --source?"
 done
 
@@ -238,7 +253,7 @@ head2 "The Python halves"
 # All three are installed, not just the two the daemon runs directly: the call
 # is started by the daemon through the venv's interpreter, and a device with a
 # working socket and no webrtc-video.py fails only when somebody presses Watch.
-for script in server-bridge.py upload-clip.py webrtc-video.py; do
+for script in server-bridge.py upload-clip.py webrtc-video.py               porchlight-firstboot.py porchlight-setup.py; do
   if [ -f "$LIB/$script" ] && cmp -s "$SOURCE/pi/$script" "$LIB/$script"; then
     ok "$script is current"
   else
@@ -350,6 +365,14 @@ fi
 
 head2 "The credential"
 
+if [ "$IMAGE" -eq 1 ]; then
+  info "an image carries no credential. Each card gets one after flashing, as"
+  info "/boot/firmware/porchlight.json, and porchlight-firstboot moves it to"
+  info "$CRED on the first boot."
+  info "  node scripts/mint-device.mjs --device-id porch-1 --json"
+fi
+if [ "$IMAGE" -eq 0 ]; then
+
 credential_shape_ok() {
   # pl_<deviceId>_<secret>, and the device id inside it has to be this device.
   # Pasting porch-2's credential into porch-1 is otherwise diagnosed as a
@@ -418,6 +441,7 @@ else
   info "  node scripts/mint-device.mjs --device-id $DEVICE"
   PLANNED=$((PLANNED + 1))
 fi
+fi  # IMAGE
 
 # ---------------------------------------------------------------- the chime
 
@@ -466,6 +490,36 @@ else
   as_root systemctl daemon-reload
 fi
 
+# The two that run before it: one turns a card into a particular doorbell, the
+# other gets it onto a network. Installed always, enabled only for an image -
+# a development Pi that raised an access point because its wi-fi hiccuped at
+# boot would be a surprise nobody wants at 11pm.
+for unit in porchlight-firstboot.service porchlight-setup.service; do
+  SOURCE_BOOT_UNIT="$SOURCE/pi/systemd/$unit"
+  if [ ! -f "$SOURCE_BOOT_UNIT" ]; then
+    bad "$SOURCE_BOOT_UNIT is missing"
+  elif [ -f "/etc/systemd/system/$unit" ] &&
+       cmp -s "$SOURCE_BOOT_UNIT" "/etc/systemd/system/$unit"; then
+    ok "$unit is current"
+  else
+    as_root install -m 0644 "$SOURCE_BOOT_UNIT" "/etc/systemd/system/$unit"
+    as_root systemctl daemon-reload
+  fi
+done
+
+if [ "$IMAGE" -eq 1 ]; then
+  for unit in porchlight-firstboot.service porchlight-setup.service porchlightd.service; do
+    if systemctl is-enabled "$unit" >/dev/null 2>&1; then
+      ok "$unit is enabled"
+    else
+      as_root systemctl enable "$unit"
+    fi
+  done
+else
+  info "not enabling porchlight-firstboot or porchlight-setup: this is not an"
+  info "image build. Add --image, or start them by hand to try them."
+fi
+
 fi  # VERIFY_ONLY
 
 # ---------------------------------------------------------------- the proofs
@@ -477,7 +531,14 @@ head2 "Does it actually work"
 # and a credential that is refused look identical from the daemon's log.
 PROVED=0
 
-if [ ! -s "$CRED" ]; then
+if [ "$IMAGE" -eq 1 ]; then
+  # Nothing to prove yet, and that is the point of an image: it is not any
+  # device in particular. These same three run at the end of the production
+  # line, on a card that has been given its certificate.
+  info "an image has no credential and nothing to connect to. These three are"
+  info "the end-of-line test, run on a finished unit:"
+  info "  provision.sh --url $URL --device-id <id> --verify"
+elif [ ! -s "$CRED" ]; then
   info "no credential yet, so none of the three can be answered"
 elif [ ! -x "$LIB/server-bridge.py" ]; then
   info "server-bridge.py is not installed yet"
@@ -528,7 +589,10 @@ fi
 
 head2 "Starting it"
 
-if [ "$PROVED" -lt 2 ]; then
+if [ "$IMAGE" -eq 1 ]; then
+  info "the units are enabled and will run at the customer's first boot, in"
+  info "order: firstboot, setup, porchlightd. Nothing is started now."
+elif [ "$PROVED" -lt 2 ]; then
   info "not enabling the service: the link is not proved yet."
   info "The daemon would start, chime, record and queue - all of which work"
   info "offline - and never deliver anything. Fix the above first."
@@ -556,8 +620,15 @@ if [ "$PROBLEMS" -eq 0 ]; then
 else
   bad "$PROBLEMS problem(s) above"
 fi
-info "proved $PROVED of 3"
+if [ "$IMAGE" -eq 0 ]; then
+  info "proved $PROVED of 3"
+fi
 
 # The proofs are what this exits on. Whether packages were already installed is
 # not interesting to a caller; whether the doorbell can reach its server is.
-[ "$PROVED" -eq 3 ] && [ "$PROBLEMS" -eq 0 ]
+# An image build has nothing to prove, so it exits on the problems alone.
+if [ "$IMAGE" -eq 1 ]; then
+  [ "$PROBLEMS" -eq 0 ]
+else
+  [ "$PROVED" -eq 3 ] && [ "$PROBLEMS" -eq 0 ]
+fi

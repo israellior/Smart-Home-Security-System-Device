@@ -1,0 +1,29 @@
+[Unit]
+Description=Porchlight first boot: make this card a particular doorbell
+Documentation=file:/usr/local/lib/porchlight/porchlight-firstboot.py
+After=local-fs.target dbus.service
+# Everything downstream needs the credential and the device id this writes.
+Before=porchlight-setup.service porchlightd.service
+
+# Deliberately no ConditionPathExists on the marker. The script is idempotent
+# and cheap, and skipping on the marker would make a re-minted card - a fresh
+# certificate written onto the boot partition of a device that has already run
+# once - invisible. That is the recovery path for a lost credential, so it has
+# to keep working.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/porchlight/porchlight-firstboot.py
+
+# Exit 2 is "this card was never minted". It is a factory fault rather than a
+# reason to fail the boot: the device still chimes, and porchlightd shows the
+# fault pattern because it cannot read a credential. Treated as success here so
+# the units after it still start and can say so.
+SuccessExitStatus=2
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
