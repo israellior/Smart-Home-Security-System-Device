@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Working notes for this project. Read this first; update it at the end of any session
-that changes something here. Last updated 2026-09-22.
+that changes something here. Last updated 2026-09-25.
 
 **Also read [DESIGN.md](DESIGN.md)** and
 [docs/server-brief.md](docs/server-brief.md). This file describes the present.
@@ -63,14 +63,16 @@ the viewer is the app rather than `public/webrtc.html`.
 | — | The call publishes to LiveKit | **written 2026-09-22 — never run on the Pi** |
 | — | `porchlightd` starts the call for real | **written 2026-09-22 — never run on the Pi** |
 | — | The button, the PIR and the LED on real GPIO | **written 2026-09-23 — never run on the Pi** |
+| — | Provisioning, and a link that comes and goes | **written 2026-09-25 — never run on the Pi** |
 
 ### Read this first: nothing after Step 5 has run on hardware
 
 Steps 1–3 and 5 were confirmed on the real Pi. Everything after them — the
 LiveKit rewrite of `webrtc-video.py`, echo cancellation, `porchlightd`'s
-`script` media backend, and now its `gpio` input and LED backends — was written
-on the Windows host and **has never run on the Pi**. Do not read the confident
-tone of the sections below as evidence.
+`script` media backend, its `gpio` input and LED backends, and now
+`pi/provision.sh` and everything about reconnecting — was written on the
+Windows host and **has never run on the Pi**. Do not read the confident tone of
+the sections below as evidence.
 
 What *was* verified, and how:
 
@@ -80,12 +82,17 @@ What *was* verified, and how:
 | A rejected credential is permanent; an unreachable server is not | same, both paths exercised |
 | The LiveKit SDK's real API surface | installed `livekit` 1.1.19 on the dev host and read it |
 | That the SDK takes the *address* of a video buffer rather than copying it | read `_utils.get_address` — which is why frames are copied with `bytes()` |
-| `build_media_command`, the config reader, the I420 size rule | `ctest`, 83 passing |
+| `build_media_command`, the config reader, the I420 size rule | `ctest`, 91 passing |
+| The fault LED, and that a later plain outage cannot cancel it | `ctest` — it is core logic, so it needs no link at all |
 | The LED blink table | `ctest` — it is deliberately free of libgpiod so it can be |
 | That the GPIO code matches libgpiod's real v2 API | compiled against upstream 2.2's own `gpiod.h`, `-Wall -Wextra -Wpedantic -Wshadow`, clean |
 | That a rising edge means "pressed" on an active-low line | read it out of `linux/gpio.h`: v2 edges are logical, "inactive to active" |
 | **The GStreamer pipeline** | **not at all.** There is no GStreamer on this host or in WSL |
 | **Any GPIO line actually moving** | **not at all.** No GPIO on this host, and libgpiod 2.x is not even packaged for Ubuntu 24.04 |
+| **`pi/provision.sh`** | **only the survey.** `bash -n`, and a dry run in WSL that printed the 19 changes it would make. Nothing has been applied anywhere |
+| The bridge's restart backoff, and the fault LED end to end | **drilled in WSL.** Started the daemon with no credential: fault at once, restarts at 1, 2, 4, 8 s, no fork loop. Wrote the credential while it ran and it came up on the next tick with no restart |
+| That arming a timerfd for zero seconds disarms it | the same drill printed `starting the bridge again in 0s`, which is how the truncation was found. Both ends of that subtraction now use one `now` |
+| **`--probe`** | **not at all.** It needs a server and a socket, and the one thing this host cannot do is reach its own port from WSL |
 
 So on the Pi, in this order — each one isolates a different half:
 
@@ -293,6 +300,63 @@ amps separately:
 ```bash
 amixer -c 2 sset "Speaker" 0%     # restore with 82%
 ```
+
+### Getting a device online, and keeping it there
+
+**Written 2026-09-25, and none of it has run on a Pi.**
+
+Provisioning is one script now. `pi/provision.sh` surveys by default and
+changes nothing; `--apply` carries it out; `--verify` runs only the proofs at
+the end, which is what to run when a doorbell that used to work has stopped.
+
+```bash
+./pi/provision.sh --url https://porchlight.example --device-id porch-1
+./pi/provision.sh --url https://porchlight.example --device-id porch-1 --apply
+```
+
+**The three proofs are the point of it**, and they are in the order they fail
+because in any other order they are indistinguishable:
+
+| | What it proves | What it cannot see |
+|---|---|---|
+| `server-bridge.py --check` | the credential, the URL, the route | the socket |
+| `server-bridge.py --probe` | the WebSocket handshake, to `hello-ok` | the camera, the tokens |
+| `webrtc-video.py --check` | both LiveKit tokens | the camera, the card |
+
+A network can carry the first and drop the second. A proxy that allows HTTPS
+and refuses a WebSocket upgrade is otherwise diagnosed as "the daemon just sits
+there", which is where the evening goes.
+
+**The credential is never an argument.** `provision.sh` prompts for it, or
+reads a file, and checks that it names *this* device — it is
+`pl_<deviceId>_<secret>`, so porch-2's credential on porch-1's card is caught
+before anything is installed rather than showing up as close code 4002 an hour
+later. It also fixes the ownership trap: a credential at 0600 owned by whoever
+typed it is unreadable to the `porchlight` user the unit runs as, and that
+fails as an authentication error.
+
+**Four things now separate "the link is down" from "the link is refusing us".**
+
+- `ServerOffline` carries a `permanent` flag, and the LED has a seventh
+  pattern, `Fault`, for it: **Offline's exact negative**, lit with two short
+  gaps where Offline is dark with two flashes. Offline passes when the network
+  comes back; Fault does not, and somebody has to walk up to the doorbell.
+  Close 4001, close 4002, and a missing credential all raise it.
+- **The daemon checks it can read the credential before it starts the bridge.**
+  A bridge that dies on a missing file dies instantly, and restarting that
+  immediately was a fork loop.
+- **The bridge is restarted with a backoff** (`server.restart_backoff_*`, two
+  seconds to sixty, reset by a connection that reached `hello-ok`). The bridge
+  reconnects on its own, so it *exiting* never means the network went away.
+- **The bridge gives up on an unanswered hello after ten seconds.** An open TCP
+  connection that nothing is reading looks exactly like a working one.
+
+Everything the server has to do to match is in
+[docs/app-server-changes.md](docs/app-server-changes.md) — written against the
+real backend, so it names files. The two that are not optional: **4002 means a
+site visit**, so nothing transient may ever use it; and **a minted viewer token
+is not proof a call started**, because a frame can be written into a half-open
+socket for up to thirty seconds.
 
 ### A healthy run
 
@@ -649,13 +713,23 @@ ever been reachable — and this quietly breaks that. Neither half knows about
 the other. Options are a `dmix` plug so both can open it, or routing the chime
 through the call's own pipeline. Not yet decided, and it is a real gap.
 
-**7. Nothing installs the call on a Pi.** `backends.media: "script"` expects
-`/usr/local/lib/porchlight/webrtc-video.py` and an interpreter at
-`/opt/porchlight/venv/bin/python3`, and there is no installer, no packaging
-step and nothing in the systemd unit that puts either there. Today it is
-`curl`, `chmod +x`, `python3 -m venv --system-site-packages` and `pip install
-livekit`, by hand, written out under "Running it". The same gap the daemon's
-own tarball has.
+**7. ~~Nothing installs the call on a Pi.~~ `pi/provision.sh` does, as of
+2026-09-25 — and it has never been run.** It installs the packages, the
+`porchlight` user and its groups, the venv with `--system-site-packages`, all
+three Python halves, the config, the credential, the chime and the unit, then
+proves the link three ways and refuses to enable the service until it passes.
+Survey by default, `--apply` to act, `--verify` for the proofs alone.
+
+Two things it deliberately does not do. **It does not build the daemon**: a
+build takes minutes and fails in ways worth reading — a missing libgpiod 2.x
+above all — and burying that in a provisioning run turns one clear compile
+error into "the script failed". And **it does not fetch anything over HTTP**:
+it works from the source tree beside it, so it does not care whether the tree
+arrived by tarball, by scp or by clone, and it needs `porchlightd/` there
+anyway for the unit file and the example config.
+
+What remains is packaging: there is still no `.deb` and no image, so the tree
+has to reach the Pi somehow before any of this runs.
 
 
 ## The codebase
@@ -672,6 +746,14 @@ docs/architecture.md    The three flows as built - alerts, clips, live stream -
 docs/server-brief.md    What the app server has to provide, written for whoever
                         builds it. Alerts, the three clip steps, LiveKit tokens.
                         Where this repo and that document disagree, that one wins.
+docs/app-server-changes.md
+                        The follow-up to the brief: what the app server has to
+                        change for a device's first connect, and for a network
+                        that comes and goes. Written against the real backend
+                        rather than from the brief, so it names files. Two items
+                        are required (4002 is a site visit; a minted token is
+                        not proof a call started) and the rest are gaps the
+                        device survives.
 porchlightd/            The C++20 doorbell daemon, with its own README and its own
                         step table. Decides when to alert, record, chime and call.
                         src/io/gpio_input.* is the button and the PIR on one
@@ -694,8 +776,16 @@ pi/webrtc-video.py      The live call. Camera and mic into LiveKit under a publi
                         tokens alone. The name is stale and the references are not.
 pi/server-bridge.py     porchlightd's WebSocket to the app server, as a child
                         process: C++ has no WebSocket, python3-websocket is here.
+                        --check proves the credential over HTTP, --probe proves
+                        the socket - a network can carry one and drop the other.
 pi/upload-clip.py       One clip, in three steps - signed url, PUT, confirm. Judged
                         by its exit code alone; only the confirm earns a 0.
+pi/provision.sh         A fresh Pi to a connected doorbell, in one pass: packages,
+                        user, venv, scripts, config, credential, unit - then the
+                        three proofs, and it will not enable the service until
+                        they pass. Surveys by default like fix-wm8960.sh; --apply
+                        acts, --verify runs only the proofs. Never takes the
+                        credential as an argument.
 pi/check-audio.sh       Read-only hardware audit: card, driver conflicts, mixer, a real
                         recording with levels, GStreamer elements, Python bindings.
 pi/check-camera.sh      The same for the camera: overlay, sensor driver, what
@@ -780,7 +870,9 @@ node tools/signal-test.js
 node tools/clip-stub.js --out ./received   # the app server's clip endpoints, faked
 ```
 
-On the Pi. There is no git clone there, so everything arrives by `curl`:
+On the Pi. **`pi/provision.sh --apply` does everything below**, and checks it;
+what follows is the same list by hand, which is what to read when one step of
+it fails. There is no git clone there, so everything arrives by `curl`:
 
 ```bash
 for f in check-audio.sh check-camera.sh check-livekit.sh fix-wm8960.sh webrtc-video.py; do
@@ -890,6 +982,18 @@ were.
 
   `git archive` takes only tracked files, so the `build*/` directories and their
   vendored GoogleTest never go near it. The tarball is gitignored.
+
+  **`pi/provision.sh` needs more than that tarball**, which holds `porchlightd/`
+  alone. It works from a tree with both `pi/` and `porchlightd/` in it — it
+  installs the three Python halves, and it reads the unit file and the example
+  config out of `porchlightd/`. Whole-repo archive, then:
+
+  ```bash
+  git archive --format=tar.gz --prefix=porchlight/ HEAD -o public/porchlight.tar.gz
+  ```
+
+  It fetches nothing over HTTP itself, deliberately: however the tree arrived
+  — tarball, scp or clone — is not its business.
 - Node 24, so the global `WebSocket` is available in `tools/signal-test.js`.
 
 ## Keeping this file current

@@ -2,6 +2,19 @@
 Description=Porchlight doorbell daemon
 After=network.target
 
+# A restart loop is the wrong answer to the one failure that restarts cannot
+# fix: a config file that will not parse. The daemon exits 1 immediately on
+# that, and without a limit systemd would run it every two seconds forever,
+# filling the journal with the same line and hiding it in its own repetition.
+# Five tries in five minutes, then stop and say so - `systemctl status` then
+# shows the reason rather than the current attempt.
+#
+# Losing the *network* never gets here: the daemon stays up for that, queues
+# its alerts and goes on chiming, which is the whole point of it being a
+# daemon rather than a script.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/porchlightd /etc/porchlight/porchlightd.json

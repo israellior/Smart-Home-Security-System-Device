@@ -1,7 +1,10 @@
 # Running the whole thing
 
 Cold start, everything closed. Nothing here installs or configures — it assumes
-the Pi already has `porchlightd`, the venv and a valid credential.
+the Pi already has `porchlightd`, the venv and a valid credential. For a Pi
+that does not, `pi/provision.sh` is the installer and
+[docs/app-server-changes.md](docs/app-server-changes.md) is what the app server
+needs for a device's first connection.
 
 Machines: **Pi** `192.168.0.129` (user `israellior1`), **server host**
 `192.168.0.219` (this Windows box). MongoDB is Atlas and R2 and LiveKit are
@@ -109,6 +112,12 @@ running the system. It exists only so the Pi can `curl` scripts and the
   stops a recording before starting a call for that reason. A stray
   `rpicam-hello` or a second `porchlightd` will take either, and the failure
   reads as "cannot open" rather than "something else has it".
+- **The LED tells an outage from a refusal.** Dark with two quick flashes is
+  offline and passes on its own; lit with two short gaps is a fault — a
+  rejected credential, something else signed in as this device, or no readable
+  credential — and it does not. When you see it, `journalctl -u porchlightd`
+  says which, and `pi/provision.sh --url ... --device-id ... --verify` says
+  which of the three proofs fails.
 - **A doorbell press during a live view will not chime** — the call holds the
   card. Known gap, not a fault.
 - **Clip sizes vary from ~400 KB to ~3.8 MB.** That is x264 spending its

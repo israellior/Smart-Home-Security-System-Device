@@ -34,8 +34,11 @@ std::vector<Action> Core::handle(const Event& event, TimePoint now) {
                  [&](const RecordingFinished& e) { on_recording_finished(e, out); },
                  [&](const UploadFinished& e) { on_upload_finished(e, now); },
                  [&](const AlertResult& e) { alerts_.on_result(e.event_id, e.kind, e.outcome, now); },
-                 [&](const ServerOnline&) { server_online_ = true; },
-                 [&](const ServerOffline&) { on_server_offline(now); },
+                 [&](const ServerOnline&) {
+                   server_online_ = true;
+                   server_fault_ = false;
+                 },
+                 [&](const ServerOffline& e) { on_server_offline(e, now); },
                  [&](const Tick&) {},
                  [&](const Shutdown&) { on_shutdown(out); },
              },
@@ -188,8 +191,12 @@ void Core::on_upload_finished(const UploadFinished& event, TimePoint now) {
   upload_retry_after_.reset();
 }
 
-void Core::on_server_offline(TimePoint now) {
+void Core::on_server_offline(const ServerOffline& event, TimePoint now) {
   server_online_ = false;
+  // Latched rather than assigned: a link that has given up permanently goes on
+  // reporting plain offline afterwards, and the second report must not talk the
+  // LED back down into "the network will be along shortly".
+  server_fault_ = server_fault_ || event.permanent;
   // Anything in flight when the link dropped never landed.
   alerts_.link_lost(now);
   if (upload_in_flight_) {
@@ -299,6 +306,9 @@ LedPattern Core::desired_led() const {
   }
   if (recording_ != RecordingState::Idle) {
     return LedPattern::Recording;
+  }
+  if (server_fault_) {
+    return LedPattern::Fault;
   }
   if (!server_online_) {
     return LedPattern::Offline;

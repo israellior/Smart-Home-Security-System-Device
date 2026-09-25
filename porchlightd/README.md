@@ -24,8 +24,8 @@ Each step adds exactly one thing that can break.
 | 3 | Fake backends, so the whole flow runs from the keyboard | **done** |
 
 Verified on both machines: WSL2 GCC 13.3 and the Pi's GCC 14.2, Debug and
-Release, 0 warnings — 48/48 each when the Pi last ran them, **83/83 on WSL**
-since the live call went in. There are two test binaries: `core_tests` links
+Release, 0 warnings — 48/48 each when the Pi last ran them, **91/91 on WSL**
+since provisioning went in. There are two test binaries: `core_tests` links
 only `porchlight_core`, which is what keeps "no I/O in the core" true rather
 than merely intended, and `runtime_tests` reaches into `porchlight_runtime` to
 check the GStreamer command line the recorder builds and the argv the daemon
@@ -58,6 +58,7 @@ gave it away, which is why the child's output is not redirected.
 | — | Camera: real footage in the clips | **done 2026-09-22** |
 | — | Media: `viewer-requested` really starts a call | **done 2026-09-22, untested on hardware** |
 | — | LED, button, PIR | **written 2026-09-23 — never run on the Pi** |
+| — | Provisioning, and surviving a network that comes and goes | **written 2026-09-25 — never run on the Pi** |
 
 **The live call (2026-09-22).** `backends.media: "script"` runs
 `webrtc-video.py` as a child process on `StartCall`, watched through a pidfd
@@ -113,8 +114,20 @@ a bare `libcamerasrc ! videoconvert ! v4l2h264enc ! fakesink` produces nothing,
 where `x264enc` runs at 30 fps. Not yet investigated; `x264` is the tested path
 with the camera.
 
-Out of scope for now: libgpiod, the kernel driver, pre-roll recording,
-first-boot provisioning.
+**First-boot provisioning (2026-09-25).** [`pi/provision.sh`](../pi/provision.sh)
+takes a Pi from a fresh OS install to a connected doorbell and proves the link
+three ways before it enables anything. Two daemon-side changes go with it, both
+about what happens when that link is not there:
+
+- **The bridge is restarted with a backoff** (`server.restart_backoff_*`)
+  instead of immediately. The bridge reconnects by itself, so it exiting never
+  means the network went away — it means the bridge could not run, and a missing
+  interpreter or an unreadable credential fails again just as fast. Restarting
+  it instantly was a fork loop.
+- **A permanent refusal has its own LED pattern.** `ServerOffline` now carries
+  whether waiting will help, and the light says so.
+
+Out of scope for now: the kernel driver, pre-roll recording.
 
 ## Build
 
@@ -212,6 +225,25 @@ the tracked example, or every `git pull` will fight you.
 
 ## Deploying to the Pi for real
 
+**[`pi/provision.sh`](../pi/provision.sh) does all of this**, checked rather
+than remembered, and ends by proving the connection three ways. It surveys by
+default and changes nothing until `--apply`:
+
+```bash
+./pi/provision.sh --url https://porchlight.example --device-id porch-1
+./pi/provision.sh --url https://porchlight.example --device-id porch-1 --apply
+./pi/provision.sh --url https://porchlight.example --device-id porch-1 --verify
+```
+
+It will not build the daemon for you — a build takes minutes and fails in ways
+worth reading, and burying that inside a provisioning run turns one clear
+compile error into "the script failed". Build first, then run it. It also
+refuses to enable the unit until the link is proved, because a daemon that
+starts, chimes, records and queues while delivering nothing looks like a
+working doorbell for about a day.
+
+What it does, and what to do by hand if you would rather:
+
 Four things on the device, and only the credential is secret.
 
 ```bash
@@ -250,6 +282,14 @@ before starting anything:
 
 That prints the device's name and location straight from the server, and proves
 the credential, the URL and the network in one call without opening a socket.
+**`--probe` is the other half**: it opens the real signaling socket, says hello
+and waits for `hello-ok`. A network can carry the first and drop the second, and
+a proxy that allows HTTPS but not a WebSocket upgrade is otherwise diagnosed as
+"the daemon just sits there".
+
+```bash
+/usr/local/lib/porchlight/server-bridge.py --url <SERVER_URL>   --device-id porch-1 --credential-file /etc/porchlight/credential --probe
+```
 
 **Two traps in the systemd unit.**
 
@@ -457,12 +497,21 @@ libgpiod precisely so the tests can check it on a machine with no GPIO:
 | Live | solid |
 | Recording | 1 s on, 1 s off |
 | Offline | two 120 ms flashes, then dark for 1.64 s |
+| Fault | lit for 1.64 s, then two 120 ms gaps |
 | Idle, Off | dark |
 
 Ring against Recording is the pair that costs most to confuse — someone is at
 the door, against the camera is running — so a test asserts the factor of four
 between them. Offline is a *shape* rather than a rate so it cannot be misread
 as a slow version of either.
+
+**Fault is Offline's exact negative**, phase for phase, and that is the second
+pair worth not confusing: both mean the server is not hearing us, and the
+difference is whether waiting fixes it. Offline passes when the network comes
+back. Fault does not — the credential was refused (close 4002), something else
+signed in as this device (4001), or there is no readable credential on the card
+at all — and somebody has to walk up to the doorbell. A tested property rather
+than a description: `lit(Fault) + lit(Offline) == the period they share`.
 
 The core emits `SetLed` only when the pattern **changes**, so everything that
 blinks is kept going by the backend: `GpioLed` owns a timer of its own, the
@@ -478,7 +527,7 @@ mid-call would otherwise leave the porch lit for good.
 src/core/        the rules. No I/O, ever. What the tests exercise.
 src/io/          one interface per thing in the world, plus today's fakes.
 src/             the machinery: reactor, config, logging, daemon wiring.
-tests/           83 unit tests: no hardware, no GStreamer, no GPIO, no Pi.
+tests/           91 unit tests: no hardware, no GStreamer, no GPIO, no Pi.
 docs/            decisions that outlive the code that implements them.
 systemd/         the unit file.
 ```

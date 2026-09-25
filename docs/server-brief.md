@@ -3,6 +3,12 @@
 Copy this into the server repository. It is what the device side already
 expects, written for whoever builds the other end.
 
+**There is a follow-up: [app-server-changes.md](app-server-changes.md).** This
+document is the contract; that one is the list of changes, written later and
+against the real server rather than from this specification, covering a
+device's first connection and what has to happen when the network comes back.
+Where the two overlap they agree; where one is more specific, it is that one.
+
 Nothing here describes code you have. It describes code that **already exists,
 runs on real hardware, and is written against the contract below** — so where
 this document and a future design disagree, this one is the constraint.

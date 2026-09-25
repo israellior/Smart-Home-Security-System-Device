@@ -158,5 +158,16 @@ TEST(MediaCommand, CarriesTheTwoTimeoutsThatEndTheCall) {
   EXPECT_EQ(value_of(args, "--linger"), "2");
 }
 
+// The third timeout, and the one that is about the network rather than about
+// the audience. A call that meets a bad minute should sit through it rather
+// than end, because the person watching is still standing there - and the
+// script mints a fresh token on every attempt, so there is nothing here that
+// expires while it waits.
+TEST(MediaCommand, CarriesHowLongACallMayKeepTryingToRejoin) {
+  MediaConfig media;
+  media.reconnect_timeout = std::chrono::seconds{90};
+  EXPECT_EQ(value_of(command(media), "--reconnect-timeout"), "90");
+}
+
 }  // namespace
 }  // namespace porch

@@ -8,8 +8,11 @@
 
 #include <cerrno>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <utility>
 
+#include "core/clock.h"
 #include "iso8601.h"
 #include "logging.h"
 
@@ -25,10 +28,15 @@ BridgeServerLink::BridgeServerLink(Reactor& reactor, EventSink sink, ServerConfi
     : reactor_(reactor),
       sink_(std::move(sink)),
       config_(std::move(config)),
-      device_id_(std::move(device_id)) {
+      device_id_(std::move(device_id)),
+      restart_backoff_(config_.restart_backoff_initial, config_.restart_backoff_max) {
   reactor_.watch(ack_timer_.fd(), [this] {
     ack_timer_.drain();
     on_ack_timeout();
+  });
+  reactor_.watch(restart_timer_.fd(), [this] {
+    restart_timer_.drain();
+    try_spawn();
   });
 }
 
@@ -39,13 +47,51 @@ BridgeServerLink::~BridgeServerLink() {
     ::waitpid(bridge_.pid, &status, 0);
   }
   release();
+  reactor_.unwatch(restart_timer_.fd());
   reactor_.unwatch(ack_timer_.fd());
 }
 
-void BridgeServerLink::start() { spawn(); }
+void BridgeServerLink::start() { try_spawn(); }
 
-void BridgeServerLink::spawn() {
+// The credential is the one file the daemon needs and cannot make for itself,
+// and the way it usually goes wrong is not that it is absent but that it is
+// 0600 and owned by somebody else: the unit runs as `porchlight`, and a
+// credential written by hand belongs to whoever typed it.
+//
+// That matters because of where it surfaces otherwise. The bridge would exit,
+// the server would never see a hello, and the only evidence would be an
+// authentication failure - which reads as "this device must be re-minted" when
+// the fix is one chmod. Checking here costs an open(), and only on an attempt
+// that is about to be made anyway.
+bool BridgeServerLink::credential_readable() const {
+  std::error_code ec;
+  if (!std::filesystem::exists(config_.credential_path, ec)) {
+    log(Level::Error, "server", "there is no credential at {}. The device is not provisioned: "
+        "mint one on the server and write it there.", config_.credential_path.string());
+    return false;
+  }
+  const std::ifstream file(config_.credential_path);
+  if (!file) {
+    log(Level::Error, "server", "cannot read {}: {}. Check the owner and mode - this runs as "
+        "the porchlight user and the file is meant to be 0600.",
+        config_.credential_path.string(), std::strerror(errno));
+    return false;
+  }
+  return true;
+}
+
+void BridgeServerLink::try_spawn() {
   if (given_up_) {
+    return;
+  }
+  if (!credential_readable()) {
+    // Permanent to the LED, because no amount of waiting writes a credential -
+    // somebody has to. Not permanent to this object, though: the wait goes on,
+    // so writing the file while the daemon is running brings the link up within
+    // a backoff instead of needing a restart as well. That is exactly what
+    // happens during provisioning.
+    report_down(true, "no usable credential");
+    schedule_restart();
     return;
   }
   bridge_ = spawn_child_with_pipes({
@@ -57,10 +103,47 @@ void BridgeServerLink::spawn() {
   if (bridge_.pid < 0) {
     log(Level::Error, "server", "cannot start {}: {}", config_.bridge_path.string(),
         std::strerror(errno));
+    // Permanent for the same reason a missing credential is: the bridge is not
+    // going to install itself, and a device whose light says "offline" is a
+    // device somebody waits for. The retry continues regardless, so putting
+    // the file there while the daemon runs is enough.
+    report_down(true, "the bridge will not start");
+    schedule_restart();
     return;
   }
   reactor_.watch(bridge_.from_child.get(), [this] { on_readable(); });
   log(Level::Info, "server", "bridge started, connecting to {}", config_.base_url);
+}
+
+void BridgeServerLink::schedule_restart() {
+  if (given_up_) {
+    return;
+  }
+  // Both ends of the subtraction are the same `now`, deliberately. Asking the
+  // clock twice loses the fraction of a millisecond in between, which truncates
+  // a one-second wait to zero - and arming a timerfd for zero does not fire it,
+  // it disarms it. The bridge would then never be started again at all.
+  const TimePoint now = Clock::now();
+  const auto wait = std::chrono::duration_cast<std::chrono::seconds>(restart_backoff_.fail(now) - now);
+  log(Level::Info, "server", "starting the bridge again in {}s", wait.count());
+  restart_timer_.arm_in(wait);
+}
+
+// Said to the core once per outage rather than once per attempt. `permanent`
+// is what separates "the network will be back" from "somebody has to come and
+// fix this", and only the LED reads the difference. Both are reported once: a
+// credential that is still missing on the ninth attempt is not news, and a log
+// line every two seconds is how a device with one broken thing looks like a
+// device with an unstable network.
+void BridgeServerLink::report_down(bool permanent, const std::string& why) {
+  if (down_reported_ && (!permanent || fault_reported_)) {
+    return;
+  }
+  down_reported_ = true;
+  fault_reported_ = fault_reported_ || permanent;
+  online_ = false;
+  log(Level::Warn, "server", "link down: {}", why);
+  sink_(ServerOffline{permanent});
 }
 
 void BridgeServerLink::send_alert(const SendAlert& alert) {
@@ -133,18 +216,25 @@ void BridgeServerLink::handle_line(const std::string& line) {
   const std::string type = message.value("type", "");
   if (type == "online") {
     online_ = true;
+    down_reported_ = false;
+    fault_reported_ = false;
+    // A connection that actually worked is the only evidence that whatever was
+    // wrong has stopped being wrong, so it is the only thing that resets the
+    // wait. The bridge resets its own reconnect delay on the same event.
+    restart_backoff_.reset();
+    restart_timer_.disarm();
     log(Level::Info, "server", "connected");
     sink_(ServerOnline{});
   } else if (type == "offline") {
-    online_ = false;
     log(Level::Warn, "server", "disconnected: {}", message.value("reason", "?"));
-    sink_(ServerOffline{});
+    report_down(false, message.value("reason", "?"));
   } else if (type == "fatal") {
     const std::string reason = message.value("reason", "?");
-    log(Level::Error, "server", "the link cannot recover: {}", reason);
+    log(Level::Error, "server", "the link cannot recover: {}. Nothing here will retry - "
+        "the device needs a person.", reason);
     given_up_ = true;
-    online_ = false;
-    sink_(ServerOffline{});
+    restart_timer_.disarm();
+    report_down(true, reason);
   } else if (type == "event-ack") {
     const EventId id = message.value("eventId", "");
     const bool ok = message.value("ok", false);
@@ -184,18 +274,16 @@ void BridgeServerLink::on_bridge_lost(const char* why) {
   }
   release();
 
-  if (online_) {
-    online_ = false;
-    sink_(ServerOffline{});
-  }
+  report_down(false, why);
   if (awaiting_ack_) {
     awaiting_ack_ = false;
     sink_(AlertResult{pending_id_, pending_kind_, AlertOutcome::Failed});
   }
   // The bridge reconnects by itself, so it only exits when it has given up or
   // been killed. Starting it again is the right answer for the second case and
-  // given_up_ covers the first.
-  spawn();
+  // given_up_ covers the first - but after a wait, because a bridge that dies
+  // on exec dies on the next exec just as fast.
+  schedule_restart();
 }
 
 void BridgeServerLink::release() {

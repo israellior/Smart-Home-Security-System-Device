@@ -179,6 +179,13 @@ void validate(const Config& cfg) {
   require_positive("media.fps", cfg.media.fps);
   require_positive("media.video_bitrate_kbps", cfg.media.video_bitrate_kbps);
   require_positive("media.idle_timeout_seconds", cfg.media.idle_timeout);
+  require_positive("media.reconnect_timeout_seconds", cfg.media.reconnect_timeout);
+  require_positive("server.restart_backoff_initial_seconds", cfg.server.restart_backoff_initial);
+  if (cfg.server.restart_backoff_max < cfg.server.restart_backoff_initial) {
+    throw ConfigError(
+        "server.restart_backoff_max_seconds: expected at least "
+        "server.restart_backoff_initial_seconds");
+  }
   // GStreamer pads I420 rows up to a multiple of four and LiveKit reads the
   // planes tightly packed. They agree for any width that is a multiple of eight
   // and can disagree otherwise, and the symptom is a picture sheared
@@ -247,6 +254,10 @@ Config load_config(const std::filesystem::path& path) {
   cfg.server.bridge_path = server.string_or("bridge_path", cfg.server.bridge_path.string());
   cfg.server.uploader_path = server.string_or("uploader_path", cfg.server.uploader_path.string());
   cfg.server.ack_timeout = server.seconds_or("ack_timeout_seconds", cfg.server.ack_timeout);
+  cfg.server.restart_backoff_initial =
+      server.seconds_or("restart_backoff_initial_seconds", cfg.server.restart_backoff_initial);
+  cfg.server.restart_backoff_max =
+      server.seconds_or("restart_backoff_max_seconds", cfg.server.restart_backoff_max);
 
   const Section chime = root.section("chime");
   cfg.chime.device = chime.string_or("device", cfg.chime.device);
@@ -294,6 +305,8 @@ Config load_config(const std::filesystem::path& path) {
   cfg.media.echo_cancel = media.bool_or("echo_cancel", cfg.media.echo_cancel);
   cfg.media.idle_timeout = media.seconds_or("idle_timeout_seconds", cfg.media.idle_timeout);
   cfg.media.linger = media.seconds_or("linger_seconds", cfg.media.linger);
+  cfg.media.reconnect_timeout =
+      media.seconds_or("reconnect_timeout_seconds", cfg.media.reconnect_timeout);
 
   const Section gpio = root.section("gpio");
   cfg.gpio.chip = gpio.string_or("chip", cfg.gpio.chip);

@@ -49,6 +49,42 @@ and as `token` in `hello`.
 The device is never told who owns it and does not need to know. It reports; the
 server decides who hears about it.
 
+`pi/provision.sh` is what writes it, and it checks two things nothing else
+does: that the credential names **this** device (`pl_<deviceId>_...`, so
+porch-2's credential cannot be installed on porch-1 and discovered as a
+rejected credential an hour later), and that the file ends up owned by the user
+the unit runs as. A credential at 0600 owned by whoever typed it is unreadable
+to the daemon, and that fails as an authentication error rather than as a
+permission one.
+
+The daemon checks it can read the file before it starts the bridge at all, for
+the same reason: a bridge that exits on a missing credential exits instantly,
+every time, and a restart loop over that is a busy CPU and a log that says
+nothing.
+
+## Connecting for the first time
+
+Three questions, in the order they fail, each isolating a different half. In
+any other order a socket that will not open is indistinguishable from a
+credential that is refused:
+
+```bash
+server-bridge.py --url URL --device-id ID --credential-file F --check
+server-bridge.py --url URL --device-id ID --credential-file F --probe
+webrtc-video.py  --url URL --device-id ID --credential-file F --check
+```
+
+`--check` is one HTTPS request against `/api/devices/<id>/self`: it proves the
+credential, the URL and the route, and touches no socket. `--probe` opens the
+real signaling socket, says hello and waits for `hello-ok`, which proves the
+thing the daemon actually depends on. **A network can carry the first and drop
+the second** — a proxy that allows HTTPS and not a WebSocket upgrade is
+otherwise diagnosed as "the daemon just sits there". The third proves the two
+LiveKit token endpoints with no camera involved.
+
+`pi/provision.sh` runs all three at the end of an install and refuses to enable
+the unit until the first two pass.
+
 ## Close codes
 
 | code | meaning | what the device does |
@@ -63,6 +99,28 @@ The server pings at the protocol level every 30 s and drops anything that
 missed the previous one. The library answers those automatically **from inside
 its read loop**, so nothing else may block that loop — if it does, the symptom
 is a flaky network rather than a stuck reader.
+
+The bridge pings the other way every 20 s with a 10 s timeout, so it notices a
+dead link before the server does.
+
+**4001 and 4002 stop the device until a person arrives.** Both set the LED to
+the fault pattern — lit with two short gaps, the exact negative of the ordinary
+offline blink — because the difference between them and a flat router is whether
+waiting helps. That makes the codes load-bearing on the server side too:
+anything transient must be 1013, never 4002, or a doorbell needs a site visit
+to come back. See [app-server-changes.md](../../docs/app-server-changes.md).
+
+**A hello that is never answered is its own failure.** The server closes a
+socket that has not said hello within ten seconds; the bridge closes one whose
+hello has not been answered within ten. An open TCP connection that nothing is
+reading looks exactly like a working one, and without the second rule the
+daemon waits on it forever.
+
+**The bridge is restarted with a backoff**, `server.restart_backoff_*`, two
+seconds doubling to sixty and reset by a connection that reached `hello-ok`.
+The bridge reconnects by itself, so it exiting never means the network went
+away — it means the bridge could not run, and that class of fault recurs
+instantly.
 
 ## Alerts
 

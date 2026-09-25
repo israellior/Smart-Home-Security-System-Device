@@ -29,7 +29,9 @@
     "credential_path": "/etc/porchlight/credential",
     "bridge_path": "/usr/local/lib/porchlight/server-bridge.py",
     "uploader_path": "/usr/local/lib/porchlight/upload-clip.py",
-    "ack_timeout_seconds": 10
+    "ack_timeout_seconds": 10,
+    "restart_backoff_initial_seconds": 2,
+    "restart_backoff_max_seconds": 60
   },
 
   "chime": {
@@ -70,7 +72,8 @@
     "talkback": true,
     "echo_cancel": true,
     "idle_timeout_seconds": 30,
-    "linger_seconds": 3
+    "linger_seconds": 3,
+    "reconnect_timeout_seconds": 60
   },
 
   "gpio": {

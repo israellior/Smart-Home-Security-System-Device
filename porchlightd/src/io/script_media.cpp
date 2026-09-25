@@ -27,6 +27,13 @@ constexpr std::chrono::seconds kStopGrace{5};
 // was finished. Starting another is right; reporting the call over is not.
 constexpr std::chrono::seconds kRaceWindow{5};
 
+// webrtc-video.py's EXIT_CONFIG: a missing GStreamer element, no camera, or a
+// credential LiveKit's token endpoint refused outright. All of them fail the
+// same way on the next try, so the one thing not to do is try again. Without
+// this, a viewer pressing Watch on a device whose camera is missing would start
+// a process per press, each of which dies immediately.
+constexpr int kConfigExit = 1;
+
 }  // namespace
 
 std::vector<std::string> build_media_command(const ServerConfig& server, const MediaConfig& media,
@@ -53,6 +60,10 @@ std::vector<std::string> build_media_command(const ServerConfig& server, const M
       "--aec", media.echo_cancel ? "on" : "off",
       "--idle-timeout", std::to_string(media.idle_timeout.count()),
       "--linger", std::to_string(media.linger.count()),
+      // How long a call may spend rejoining before it gives up. The script
+      // mints a fresh token per attempt, so this is a budget for bad network
+      // and nothing else - there is no token here to expire.
+      "--reconnect-timeout", std::to_string(media.reconnect_timeout.count()),
   };
 
   // Only where it means something: --focus on a fixed-lens camera and
@@ -214,10 +225,16 @@ void ScriptMedia::on_child_exit() {
   release_child();
 
   const bool clean = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  const bool misconfigured = WIFEXITED(status) && WEXITSTATUS(status) == kConfigExit;
   const bool asked_to_stop = stopping_;
   stopping_ = false;
 
-  if (!clean) {
+  if (misconfigured) {
+    log(Level::Error, "media",
+        "the call cannot start on this device and retrying will not change that - "
+        "run {} --check and --dry-run by hand to see which half",
+        media_.script.string());
+  } else if (!clean) {
     log(Level::Warn, "media", "the call ended badly (status {})", status);
   }
 
@@ -225,7 +242,8 @@ void ScriptMedia::on_child_exit() {
   // the script had already decided it was finished and never saw them. Telling
   // the core the call is over would leave that viewer watching nothing with
   // nothing left to retry, so start another instead.
-  if (!asked_to_stop && !peers_.empty() && Clock::now() - requested_at_ < kRaceWindow) {
+  if (!asked_to_stop && !misconfigured && !peers_.empty() &&
+      Clock::now() - requested_at_ < kRaceWindow) {
     log(Level::Info, "media", "a viewer arrived as the last call was ending; starting another");
     if (spawn()) {
       return;

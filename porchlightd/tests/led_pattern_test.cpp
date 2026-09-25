@@ -19,9 +19,10 @@ namespace {
 
 using std::chrono::milliseconds;
 
-const std::vector<LedPattern> kAllPatterns = {LedPattern::Ring,    LedPattern::Live,
-                                              LedPattern::Recording, LedPattern::Offline,
-                                              LedPattern::Idle,    LedPattern::Off};
+const std::vector<LedPattern> kAllPatterns = {LedPattern::Ring,  LedPattern::Live,
+                                              LedPattern::Recording, LedPattern::Fault,
+                                              LedPattern::Offline,   LedPattern::Idle,
+                                              LedPattern::Off};
 
 milliseconds period(LedPattern pattern) {
   milliseconds total{0};
@@ -124,6 +125,30 @@ TEST(LedPatterns, OfflineIsAShapeRatherThanARate) {
   // duty cycle, not speed, so it cannot be misread as either at a distance.
   EXPECT_EQ(led_phases(LedPattern::Offline).size(), 4u);
   EXPECT_LT(lit(LedPattern::Offline) * 4, period(LedPattern::Offline));
+}
+
+TEST(LedPatterns, FaultIsOfflineInverted) {
+  // The pair most likely to be confused, because they mean almost the same
+  // thing: the server is not hearing us. The difference that matters is
+  // whether waiting fixes it, so they are opposites rather than variations -
+  // same period, inverted duty. Anyone who can read one can read the other.
+  EXPECT_EQ(period(LedPattern::Fault), period(LedPattern::Offline));
+  EXPECT_EQ(lit(LedPattern::Fault) + lit(LedPattern::Offline), period(LedPattern::Fault));
+  EXPECT_GT(lit(LedPattern::Fault) * 4, period(LedPattern::Fault) * 3);
+}
+
+TEST(LedPatterns, FaultBlinksSoItIsNotASolidLightLikeALiveCall) {
+  // Mostly lit, but never for a whole cycle: an unbroken light already means
+  // somebody is watching through the camera.
+  EXPECT_TRUE(blinks(LedPattern::Fault));
+  EXPECT_FALSE(blinks(LedPattern::Live));
+}
+
+TEST(LedPatterns, FaultBeginsLit) {
+  // The backend restarts a pattern at its first phase, and this one is not
+  // going to end on its own - starting dark would make a permanent fault read
+  // as a device that is simply off.
+  EXPECT_TRUE(led_phases(LedPattern::Fault).front().on);
 }
 
 }  // namespace

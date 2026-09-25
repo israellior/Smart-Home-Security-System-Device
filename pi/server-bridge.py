@@ -19,10 +19,18 @@ hello, and relays JSON lines both ways.
 There is no enrolment. The credential is written onto the SD card when the
 device is built; this only ever reads it.
 
-By hand, against a live server and with no daemon involved:
+By hand, against a live server and with no daemon involved. --check and
+--probe are the two halves of a first connection and they fail differently:
+--check is one HTTPS request and proves the credential, the URL and the
+route; --probe opens the real socket and proves the handshake the daemon
+depends on. A device that passes the first and fails the second has a proxy
+or a firewall in the way that allows HTTP and not WebSocket - otherwise
+diagnosed as "the daemon just sits there".
 
     ./server-bridge.py --url http://host:4000 --device-id porch-1 \\
         --credential-file /etc/porchlight/credential --check
+    ./server-bridge.py --url http://host:4000 --device-id porch-1 \\
+        --credential-file /etc/porchlight/credential --probe
     ./server-bridge.py --url http://host:4000 --device-id porch-1 \\
         --credential-file /etc/porchlight/credential
     {"type":"event","eventId":"test-1","kind":"ring","at":"2026-09-21T10:00:00.000Z"}
@@ -52,9 +60,42 @@ HELLO_ROLE = "device"
 RECONNECT_INITIAL = 1.0
 RECONNECT_MAX = 60.0
 
+# How long the server has to answer our hello before we assume the socket is
+# no longer a socket. The server drops anything that has not said hello within
+# ten seconds; this is the mirror of that rule, and it exists because a TCP
+# connection that is open but dead looks exactly like one that is working. A
+# transparent proxy that accepts the upgrade and forwards nothing is the usual
+# cause, and without this the daemon waits for it forever.
+HELLO_TIMEOUT = 10.0
+
 CLOSE_REPLACED = 4001
 CLOSE_BAD_CREDENTIAL = 4002
 CLOSE_NO_HELLO = 4003
+
+
+def hello_frame(device_id, credential):
+    """Said first on every connection, by the bridge and by --probe alike."""
+    return {
+        "type": "hello",
+        "role": HELLO_ROLE,
+        "deviceId": device_id,
+        "token": credential,
+    }
+
+
+def close_meaning(code):
+    """What a close code means to this device, in the words the docs use."""
+    if code == CLOSE_BAD_CREDENTIAL:
+        return ("the credential was refused. This is permanent: re-mint the device "
+                "on the server and write the new credential onto the card.")
+    if code == CLOSE_REPLACED:
+        return ("another connection signed in as this device. Something else is "
+                "already running - a second porchlightd, or a stale one.")
+    if code == CLOSE_NO_HELLO:
+        return "the server says we never said hello, which would be a bug in here."
+    if code == 1013:
+        return "the server is temporarily unable to take us. It is worth retrying."
+    return "no reason given; the daemon would retry with backoff."
 
 
 def emit(message):
@@ -112,6 +153,70 @@ def check(base_url, device_id, credential):
          f"name={device.get('name')} location={device.get('location')}")
 
 
+def probe(base_url, device_id, credential, timeout=HELLO_TIMEOUT * 2):
+    """Open the real socket, say hello, and report what came back.
+
+    The last step of provisioning, and the first thing to run when a device
+    that used to work has stopped. It answers a question --check cannot: the
+    daemon speaks WebSocket, and a network can carry the HTTPS request that
+    proves the credential while dropping the upgrade that carries everything
+    else. It connects once and never retries - this is a verdict, not a link.
+
+    Exits non-zero on anything but hello-ok, so a provisioning script can stop.
+    """
+    outcome = {"ok": False, "why": "no answer at all", "hello": {}}
+    done = threading.Event()
+
+    def on_open(socket):
+        note(f"socket open, saying hello as role={HELLO_ROLE} deviceId={device_id}")
+        socket.send(json.dumps(hello_frame(device_id, credential)))
+
+    def on_message(socket, raw):
+        try:
+            message = json.loads(raw)
+        except ValueError:
+            return
+        kind = message.get("type")
+        if kind == "hello-ok":
+            outcome["ok"] = True
+            outcome["hello"] = message
+            socket.close()
+        elif kind == "hello-error":
+            outcome["why"] = f"the server refused the hello: {message.get('error')}"
+            socket.close()
+
+    def on_close(_socket, code, reason):
+        if not outcome["ok"] and code is not None:
+            outcome["why"] = f"closed {code} {reason or ''} - {close_meaning(code)}"
+        done.set()
+
+    socket = websocket.WebSocketApp(
+        signal_url(base_url),
+        on_open=on_open,
+        on_message=on_message,
+        on_close=on_close,
+        on_error=lambda _socket, error: outcome.update(why=f"socket error: {error}"),
+    )
+    threading.Thread(target=socket.run_forever, daemon=True).start()
+
+    if not done.wait(timeout):
+        # Nothing came back and nothing closed. The connection is open and
+        # dead, which is the one case this probe exists to be able to name.
+        note(f"nothing in {timeout:.0f}s. The socket is open and silent, which is a "
+             "proxy or a middlebox rather than the server.")
+        socket.close()
+        return 1
+
+    if not outcome["ok"]:
+        note(f"the socket did not come up: {outcome['why']}")
+        return 1
+
+    answer = outcome["hello"]
+    note(f"connected. The server knows this device as {answer.get('deviceId')} "
+         f"(record {answer.get('device')}). This is what porchlightd does at boot.")
+    return 0
+
+
 class Bridge:
     def __init__(self, url, device_id, credential):
         self.url = url
@@ -121,6 +226,8 @@ class Bridge:
         self.ready = False
         self.stop = False
         self.delay = RECONNECT_INITIAL
+        # Armed when the socket opens, cancelled by hello-ok. See HELLO_TIMEOUT.
+        self.hello_timer = None
         # stdin is read on its own thread, so two threads can reach the socket.
         # websocket-client does not serialise writes, and interleaved frames
         # would corrupt the stream rather than merely reorder it.
@@ -156,12 +263,25 @@ class Bridge:
         # The server closes anything that has not said hello within ten
         # seconds, so this is the first thing that happens.
         with self.sending:
-            socket.send(json.dumps({
-                "type": "hello",
-                "role": HELLO_ROLE,
-                "deviceId": self.device_id,
-                "token": self.credential,
-            }))
+            socket.send(json.dumps(hello_frame(self.device_id, self.credential)))
+
+        def unanswered():
+            if self.ready:
+                return
+            note(f"no answer to hello in {HELLO_TIMEOUT:.0f}s; starting again")
+            # Not a graceful close: a peer that never answered the handshake
+            # will not complete a closing one either, and waiting for it is
+            # the stall this timer exists to end.
+            socket.close()
+
+        self.hello_timer = threading.Timer(HELLO_TIMEOUT, unanswered)
+        self.hello_timer.daemon = True
+        self.hello_timer.start()
+
+    def cancel_hello_timer(self):
+        if self.hello_timer is not None:
+            self.hello_timer.cancel()
+            self.hello_timer = None
 
     def on_message(self, _socket, raw):
         try:
@@ -172,12 +292,19 @@ class Bridge:
 
         kind = message.get("type")
         if kind == "hello-ok":
+            self.cancel_hello_timer()
             self.ready = True
             self.delay = RECONNECT_INITIAL  # a good connection resets the backoff
             note(f"connected as role={HELLO_ROLE} deviceId={self.device_id}")
             emit({"type": "online"})
         elif kind == "hello-error":
+            # The server should close after this, and this one does. Closing it
+            # ourselves covers the server that does not: a socket left open
+            # after a refused hello is one nothing will ever arrive on, and
+            # waiting out HELLO_TIMEOUT for it only delays the retry.
             note(f"hello refused: {message.get('error')}")
+            self.cancel_hello_timer()
+            _socket.close()
         elif kind in ("event-ack", "viewer-requested"):
             emit(message)
         elif kind == "ping":
@@ -188,6 +315,7 @@ class Bridge:
             note(f"ignoring {kind}")
 
     def on_close(self, _socket, code, reason):
+        self.cancel_hello_timer()
         if self.ready:
             emit({"type": "offline", "reason": f"closed {code}"})
         self.ready = False
@@ -206,7 +334,7 @@ class Bridge:
         elif code == CLOSE_NO_HELLO:
             note("server says we never sent hello - that is a bug here")
         else:
-            note(f"disconnected: {code} {reason}")
+            note(f"disconnected: {code} {reason} - {close_meaning(code)}")
 
     def send(self, message):
         if not self.ready:
@@ -255,6 +383,8 @@ def main():
     parser.add_argument("--credential-file", required=True)
     parser.add_argument("--check", action="store_true",
                         help="verify the credential over HTTP and exit")
+    parser.add_argument("--probe", action="store_true",
+                        help="open the signaling socket once, report, and exit")
     options = parser.parse_args()
 
     credential = read_credential(options.credential_file)
@@ -266,6 +396,9 @@ def main():
     if websocket is None:
         raise SystemExit(
             "python3-websocket is not installed: sudo apt install -y python3-websocket")
+
+    if options.probe:
+        raise SystemExit(probe(options.url, options.device_id, credential))
 
     Bridge(signal_url(options.url), options.device_id, credential).run()
 

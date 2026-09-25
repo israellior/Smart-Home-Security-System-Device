@@ -62,7 +62,7 @@ class Core {
   void on_call_ended(const CallEnded& event);
   void on_recording_finished(const RecordingFinished& event, std::vector<Action>& out);
   void on_upload_finished(const UploadFinished& event, TimePoint now);
-  void on_server_offline(TimePoint now);
+  void on_server_offline(const ServerOffline& event, TimePoint now);
   void on_shutdown(std::vector<Action>& out);
 
   void trigger(Kind kind, TimePoint now, bool with_clip, std::vector<Action>& out);
@@ -87,6 +87,12 @@ class Core {
   std::optional<TimePoint> ring_led_until_;
 
   bool server_online_ = false;
+  // The link is not merely down, it is refusing us: a rejected credential, a
+  // connection replaced by another of our role, or no credential at all. Only
+  // the LED reads it - everything else about being offline is identical, and
+  // making the queue behave differently would drop alerts on the one failure
+  // where a person is already on their way to the device.
+  bool server_fault_ = false;
   AlertQueue alerts_;
 
   std::deque<PendingUpload> uploads_;

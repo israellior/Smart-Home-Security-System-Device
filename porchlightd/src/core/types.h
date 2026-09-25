@@ -13,7 +13,13 @@ enum class Kind { Motion, Ring };
 // In priority order as the core resolves them, highest first. A single
 // enumerator has to stand for the whole device state, so the order here is the
 // rule: a ring outranks a live call, which outranks a recording.
-enum class LedPattern { Ring, Live, Recording, Offline, Idle, Off };
+//
+// Fault and Offline are both "the server is not hearing us", split because the
+// answer to them is different: Offline passes on its own when the network
+// comes back, and Fault never does - the credential was refused, or something
+// else took our place, and somebody has to walk up to the device. A doorbell
+// has one LED and no screen, so that distinction has nowhere else to live.
+enum class LedPattern { Ring, Live, Recording, Fault, Offline, Idle, Off };
 
 // What the server said about an alert, which is not the same question as
 // whether the send worked. A rejection is permanent and must not be retried; a
@@ -33,6 +39,7 @@ inline const char* to_string(LedPattern pattern) {
     case LedPattern::Ring: return "ring";
     case LedPattern::Live: return "live";
     case LedPattern::Recording: return "recording";
+    case LedPattern::Fault: return "fault";
     case LedPattern::Offline: return "offline";
     case LedPattern::Idle: return "idle";
     case LedPattern::Off: return "off";

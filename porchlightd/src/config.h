@@ -40,6 +40,14 @@ struct ServerConfig {
   // How long silence is allowed to last before it counts as a failure. The
   // server signals transient trouble by not answering at all.
   std::chrono::seconds ack_timeout{10};
+  // How long to wait before starting the bridge again after it has ended, and
+  // the ceiling that wait climbs to. The bridge reconnects by itself, so it
+  // only exits when something is wrong with the bridge rather than with the
+  // network - a missing interpreter, an unreadable credential, a crash - and
+  // every one of those fails again instantly. Without a wait between attempts
+  // the daemon would spend a whole core forking a process that dies on exec.
+  std::chrono::seconds restart_backoff_initial{2};
+  std::chrono::seconds restart_backoff_max{60};
 };
 
 // The live call, which is a separate program. Held apart from RecorderConfig
@@ -79,6 +87,11 @@ struct MediaConfig {
   // leaves so that a reloaded page is not a restart.
   std::chrono::seconds idle_timeout{30};
   std::chrono::seconds linger{3};
+  // How long the call keeps trying to rejoin LiveKit before it gives up and
+  // exits. Longer than the daemon's own reconnect budget on purpose: a call is
+  // something a person is watching right now, and one that survives a lift
+  // doors' worth of bad signal is worth more than one that ends tidily.
+  std::chrono::seconds reconnect_timeout{60};
 };
 
 struct ChimeConfig {

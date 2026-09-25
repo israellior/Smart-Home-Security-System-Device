@@ -41,7 +41,16 @@ struct AlertResult {
 };
 
 struct ServerOnline {};
-struct ServerOffline {};
+
+// The link is down. `permanent` says no amount of waiting will fix it - the
+// credential was refused, another connection of our role took over, or there
+// is no credential on the card at all - so the LED asks for a person instead
+// of showing the ordinary offline blink. Everything else about being offline
+// is unchanged: alerts still queue, clips still wait, and the chime still
+// rings, because none of those need the server's permission.
+struct ServerOffline {
+  bool permanent = false;
+};
 
 // The loop arms one timer at Core::next_deadline() and sends this when it
 // fires. There is no timer id: the core keeps its own deadlines, which is what
