@@ -28,7 +28,7 @@ What it does, in order, and all of it idempotent:
   3. writes /etc/porchlight/identity.json - the non-secret half, plus the
      setup access point's own password, for porchlight-setup.py to serve
   4. sets device_id and server.base_url in porchlightd.json
-  5. sets the hostname from the device id
+  5. sets the hostname from the device id, and the 127.0.1.1 line in /etc/hosts
   6. overwrites and removes the file from the boot partition
   7. leaves a marker so it never runs again
 
@@ -73,6 +73,21 @@ def note(text):
     sys.stderr.flush()
 
 
+def hosts_with(text, hostname):
+    """text with its 127.0.1.1 line naming hostname, or one added if it has none.
+
+    A pure function so the drill can test it without a hostname to change."""
+    lines = text.splitlines()
+    entry = f"127.0.1.1\t{hostname}"
+    for index, line in enumerate(lines):
+        if line.split()[:1] == ["127.0.1.1"]:
+            lines[index] = entry
+            break
+    else:
+        lines.append(entry)
+    return "\n".join(lines) + "\n"
+
+
 class Firstboot:
     def __init__(self, options):
         self.boot = options.boot
@@ -81,6 +96,7 @@ class Firstboot:
         self.user = options.user
         self.dry_run = options.dry_run
         self.set_hostname = not options.no_hostname
+        self.hosts = options.hosts
 
     # --- the steps --------------------------------------------------------
 
@@ -100,7 +116,10 @@ class Firstboot:
             return EXIT_UNMINTED
 
         try:
-            with open(certificate_path) as handle:
+            # utf-8-sig because the line that writes these cards may be a
+            # Windows one, and PowerShell's > puts a byte-order mark in front
+            # of the JSON. Plain utf-8 reads that as a malformed certificate.
+            with open(certificate_path, encoding="utf-8-sig") as handle:
                 certificate = json.load(handle)
         except (OSError, ValueError) as error:
             note(f"cannot read {certificate_path}: {error}")
@@ -184,6 +203,17 @@ class Firstboot:
         except (OSError, subprocess.CalledProcessError) as error:
             # Not fatal. A doorbell with the wrong hostname is a doorbell.
             note(f"could not set the hostname: {error}")
+            return
+        # hostnamectl does not touch /etc/hosts, and Debian resolves its own
+        # name through the 127.0.1.1 line there. Left stale, every sudo on the
+        # device says "unable to resolve host porch-2" - seen on the first real
+        # run - and anything that looks its own name up waits on DNS for it.
+        try:
+            with open(self.hosts) as handle:
+                current = handle.read()
+            self.write(self.hosts, hosts_with(current, device_id), mode=0o644, owner=None)
+        except OSError as error:
+            note(f"could not update {self.hosts}: {error}")
 
     def destroy(self, path):
         """Overwrite, then unlink. Best effort, and worth being honest about.
@@ -251,6 +281,8 @@ def main():
     parser.add_argument("--user", default="porchlight",
                         help="who the credential belongs to (default porchlight)")
     parser.add_argument("--no-hostname", action="store_true")
+    parser.add_argument("--hosts", default="/etc/hosts",
+                        help="the hosts file whose 127.0.1.1 line names this device")
     parser.add_argument("--dry-run", action="store_true",
                         help="say what would happen and change nothing")
     options = parser.parse_args()

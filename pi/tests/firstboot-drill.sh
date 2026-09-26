@@ -102,6 +102,31 @@ $FB --boot "$W/f/boot" --etc "$W/f/etc" 2>"$W/f.log"; check "exits 1" 1 $?
 says "says it cannot read it" "$W/f.log" "cannot read"
 
 echo
+echo "== a card written from PowerShell, with a byte-order mark =="
+new_card "$W/h" ''
+printf '\xef\xbb\xbf%s' '{"deviceId":"porch-2","credential":"pl_porch-2_abc","url":"http://192.168.0.219:4000"}' \
+  > "$W/h/boot/porchlight.json"
+$FB --boot "$W/h/boot" --etc "$W/h/etc" 2>"$W/h.log"; check "exits 0" 0 $?
+says "credential is written without the mark" "$W/h/etc/credential" "^pl_porch-2_abc"
+
+echo
+echo "== the hosts line that sudo resolves the new name through =="
+python3 - <<'PY'
+import importlib.util
+spec = importlib.util.spec_from_file_location("fb", "pi/porchlight-firstboot.py")
+fb = importlib.util.module_from_spec(spec); spec.loader.exec_module(fb)
+debian = "127.0.0.1\tlocalhost\n::1\t\tlocalhost ip6-localhost\n\n127.0.1.1\tLiorRaspberryPi\n"
+out = fb.hosts_with(debian, "porch-2")
+assert "127.0.1.1\tporch-2" in out and "LiorRaspberryPi" not in out, out
+assert out.count("127.0.1.1") == 1 and "::1" in out, out
+print("  ok   an existing 127.0.1.1 line is renamed, the rest kept")
+out = fb.hosts_with("127.0.0.1 localhost\n# 127.0.1.1 old\n", "porch-2")
+assert out.endswith("127.0.1.1\tporch-2\n") and "# 127.0.1.1 old" in out, out
+print("  ok   a file with none gets one, and a comment is not mistaken for it")
+PY
+[ $? -eq 0 ] && pass=$((pass+2)) || { fail=$((fail+1)); echo "  FAIL hosts_with"; }
+
+echo
 echo "== --dry-run changes nothing =="
 new_card "$W/g" '{"deviceId":"porch-9","credential":"pl_porch-9_abc","url":"https://x.example"}'
 $FB --boot "$W/g/boot" --etc "$W/g/etc" --dry-run 2>"$W/g.log"; check "exits 0" 0 $?

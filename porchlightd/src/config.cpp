@@ -272,6 +272,7 @@ Config load_config(const std::filesystem::path& path) {
   cfg.policy.spool_max_bytes = cfg.spool.max_bytes;
 
   const Section recorder = root.section("recorder");
+  cfg.recorder.script = recorder.string_or("script", cfg.recorder.script.string());
   cfg.recorder.video_source = recorder.one_of("video_source", cfg.recorder.video_source,
                                               {"test", "libcamera"});
   cfg.recorder.audio_source = recorder.one_of("audio_source", cfg.recorder.audio_source,

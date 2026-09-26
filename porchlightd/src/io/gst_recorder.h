@@ -22,7 +22,8 @@ namespace porch {
 std::vector<std::string> build_pipeline(const RecorderConfig& config,
                                         const std::filesystem::path& output);
 
-// gst-launch-1.0 as a child process, watched through a pidfd.
+// pi/record-clip.py - gst-launch-1.0 -e with the clock pinned - as a child
+// process, watched through a pidfd.
 //
 // A separate process because a codec that segfaults should cost a clip, not
 // the doorbell, and because GStreamer would otherwise bring its own threads

@@ -51,7 +51,7 @@ That broken clip still passed every check the daemon makes — exit 0, plausible
 size, valid moov atom, right duration. Only GStreamer's own warnings on stderr
 gave it away, which is why the child's output is not redirected.
 
-| 4 | Recorder: gst-launch as a child, real playable MP4 | **done** |
+| 4 | Recorder: `record-clip.py` as a child, real playable MP4 | **done**; camera + card fixed 2026-09-26 |
 | 5 | Server link: alerts to the real app server | **done** |
 | 6 | Clips: sidecar, real upload, spool cap | **done, against a stub** |
 | 7 | The same against the real `/api/clips/...` | next, and not ours alone |
@@ -87,17 +87,21 @@ set that way. Four things had to go with it, all of them learned the hard way in
 `webrtc-video.py` the same day and all of them asserted in
 [`tests/pipeline_test.cpp`](tests/pipeline_test.cpp):
 
-- **`alsasrc provide-clock=false`, but only when the source is the camera.**
-  `alsasrc` offers the sound card as the pipeline clock and `libcamerasrc`
-  offers none, so with both present GStreamer picks the card's — while
-  `libcamerasrc` goes on timestamping from the system monotonic clock whatever
-  was chosen. Every video buffer then carries a running time worked out across
-  two time bases. In `webrtc-video.py` that stalls the video branch within a
-  second, silently, while audio runs on perfectly. There the fix is
-  `pipeline.use_clock()`; from a `gst-launch` command line there is no such
-  call, so the card declines the job instead. The `videotestsrc` path is left
-  exactly as it was verified, because `videotestsrc` follows whichever clock
-  the pipeline picked and never had the problem.
+- **The clock pinned to the system clock, but only when the source is the
+  camera** — which is why the recorder is `pi/record-clip.py` and not
+  `gst-launch-1.0`. `alsasrc` offers the sound card as the pipeline clock and
+  `libcamerasrc` offers none, so with both present GStreamer picks the card's —
+  while `libcamerasrc` goes on timestamping from the system monotonic clock
+  whatever was chosen. Every clip came out as **ten video frames spread over
+  204 hours**, and a player shows that as a clip hundreds of hours long. The
+  fix is `pipeline.use_clock()`, as in `webrtc-video.py`, and a `gst-launch`
+  command line has no such call. `alsasrc provide-clock=false` was the
+  previous attempt at an equivalent and **is not one**: `pi/check-clip.py
+  --drill` recorded it broken on the Pi on 2026-09-26, along with
+  `slave-method=none` and a 40 ms buffer, and only the pinned clock recorded a
+  clip. The `videotestsrc` path is left on its own clock, because
+  `videotestsrc` follows whichever clock the pipeline picked and never had the
+  problem.
 - **`sensor-config` pinned to 2304×1296.** Otherwise libcamera picks the
   imx708's binned 1536×864 mode, which reads only the centre 3072×1728 of the
   array — a third of the frame width gone, on the lens bought for its width.

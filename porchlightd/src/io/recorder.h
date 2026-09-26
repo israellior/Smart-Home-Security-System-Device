@@ -15,8 +15,9 @@ namespace porch {
 // reports the length it actually got, which the core then judges against
 // min_clip.
 //
-// Real backend later: gst-launch-1.0 as a child process, finishing with EOS so
-// the MP4 is playable, watched through a pidfd.
+// The real backend is pi/record-clip.py as a child process - gst-launch-1.0 -e
+// with the clock pinned - finishing with EOS so the MP4 is playable, watched
+// through a pidfd.
 class Recorder {
  public:
   virtual ~Recorder() = default;

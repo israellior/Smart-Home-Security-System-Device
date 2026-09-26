@@ -100,23 +100,13 @@ void add_audio(std::vector<std::string>& args, const RecorderConfig& config) {
     args.push_back("alsasrc");
     // The device name contains an '=', so the parser needs it quoted.
     args.push_back(std::format("device=\"{}\"", config.audio_device));
-    // alsasrc offers the sound card as the pipeline clock and libcamerasrc does
-    // not offer one at all, so with both present GStreamer picks the card's.
-    // libcamerasrc goes on timestamping from the system monotonic clock
-    // whatever the pipeline chose, so every video buffer ends up with a running
-    // time worked out by subtracting a base time in one clock's units from a
-    // timestamp in another's. In webrtc-video.py that stalls the video branch
-    // within a second while audio carries on perfectly and hides the cause.
+    // No provide-clock=false. It was here to stop the card becoming the
+    // pipeline clock, on the theory that it was the gst-launch equivalent of
+    // use_clock(), and on the Pi it is not: camera + card recorded ten video
+    // frames spread over 204 hours with it, and with slave-method=none, and
+    // with a 40 ms buffer. Only the pinned clock recorded a clip. That is
+    // --system-clock below, in record-clip.py.
     //
-    // That fix is pipeline.use_clock(), and there is no such call from a
-    // gst-launch command line - so the sound card declines the job instead and
-    // the pipeline falls back to the system clock. Only when the camera is the
-    // source: videotestsrc paces itself off whichever clock was chosen, so the
-    // tested videotestsrc + alsasrc path keeps the behaviour it was verified
-    // with, including its 200 ms buffer.
-    if (config.video_source == "libcamera") {
-      args.push_back("provide-clock=false");
-    }
     // Deliberately not the 40 ms that webrtc-video.py uses. A call trades
     // buffer for latency; a recording has no latency requirement at all, and
     // 40 ms of slack cost this Pi a quarter of its samples.
@@ -152,9 +142,20 @@ void add_audio(std::vector<std::string>& args, const RecorderConfig& config) {
 
 std::vector<std::string> build_pipeline(const RecorderConfig& config,
                                         const std::filesystem::path& output) {
-  // -e is the whole reason this works: it turns SIGINT into EOS, and EOS is
-  // what flushes the muxer and leaves a file that will play.
-  std::vector<std::string> args{"gst-launch-1.0", "-e"};
+  // record-clip.py is gst-launch-1.0 -e with one addition: it turns SIGINT into
+  // EOS, which flushes the muxer and leaves a file that will play, and it can
+  // pin the pipeline clock, which gst-launch cannot.
+  std::vector<std::string> args{config.script.string()};
+
+  // libcamerasrc stamps frames against the system monotonic clock whatever the
+  // pipeline chose, and alsasrc offers the card's clock, so with both present
+  // the video track is garbage - ten frames over 204 hours, on the Pi. Only
+  // with the camera: videotestsrc paces itself off whichever clock was chosen,
+  // so the videotestsrc + alsasrc path keeps the clock it was verified with.
+  if (config.video_source == "libcamera") {
+    args.push_back("--system-clock");
+  }
+  args.push_back("--");
 
   args.push_back("mp4mux");
   args.push_back("name=mux");
@@ -234,7 +235,8 @@ void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds) {
 
   const pid_t pid = spawn_child(build_pipeline(config_, output_));
   if (pid < 0) {
-    log(Level::Error, "rec", "cannot run gst-launch-1.0: {}", std::strerror(errno));
+    log(Level::Error, "rec", "cannot run {}: {}", config_.script.string(),
+        std::strerror(errno));
     report(false);
     return;
   }
@@ -279,7 +281,7 @@ void GstRecorder::on_timer() {
     return;
   }
   if (phase_ == Phase::Stopping) {
-    log(Level::Warn, "rec", "no EOS after {}s; killing gst-launch and giving up on {}",
+    log(Level::Warn, "rec", "no EOS after {}s; killing the recorder and giving up on {}",
         kEosGrace.count(), event_id_);
     killed_ = true;
     if (pid_ > 0) {
@@ -295,7 +297,7 @@ void GstRecorder::on_child_exit() {
 
   const bool clean = !killed_ && WIFEXITED(status) && WEXITSTATUS(status) == 0;
   if (!clean) {
-    log(Level::Warn, "rec", "gst-launch ended badly for {} (status {})", event_id_, status);
+    log(Level::Warn, "rec", "the recorder ended badly for {} (status {})", event_id_, status);
   }
   report(clean);
 }

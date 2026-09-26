@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Working notes for this project. Read this first; update it at the end of any session
-that changes something here. Last updated 2026-09-25.
+that changes something here. Last updated 2026-09-26.
 
 **Also read [DESIGN.md](DESIGN.md)** and
 [docs/server-brief.md](docs/server-brief.md). This file describes the present.
@@ -12,7 +12,9 @@ disagree, that one wins**.
 
 The five-step plan below is finished. What replaced it is a doorbell whose call
 publishes to LiveKit Cloud, and the single most important thing to know is that
-**none of the LiveKit work has run on the Pi yet** — see "Read this first".
+**the live call has still never run on the Pi** — though as of 2026-09-26 the
+doorbell around it has, from factory image to clips in the app. See "Read this
+first".
 
 ## What this is
 
@@ -60,20 +62,26 @@ the viewer is the app rather than a page served from here.
 | 3 | Add browser mic → Pi speaker | **done** — it was a call |
 | 5 | Swap `videotestsrc` for `libcamerasrc` | **done 2026-09-22 — a real camera** |
 | 4 | Echo cancellation (`webrtcdsp`) | **written 2026-09-22 — never run on the Pi** |
-| — | The call publishes to LiveKit | **written 2026-09-22 — never run on the Pi** |
+| — | The call publishes to LiveKit | **written 2026-09-22** — both tokens proven on the Pi 2026-09-26; **the call itself never run** |
 | — | `porchlightd` starts the call for real | **written 2026-09-22 — never run on the Pi** |
-| — | The button, the PIR and the LED on real GPIO | **written 2026-09-23 — never run on the Pi** |
-| — | Provisioning, and a link that comes and goes | **written 2026-09-25 — never run on the Pi** |
-| — | A device that ships: identity at the factory, wi-fi from a phone | **written 2026-09-25 — never run on the Pi** |
+| — | The button, the PIR and the LED on real GPIO | **done 2026-09-26** — button, PIR and chime under systemd. LED line opens; its patterns not yet watched |
+| — | Provisioning, and a link that comes and goes | **provisioning done 2026-09-26** (`--image --apply`, `--verify` 3 of 3). Reconnecting never drilled on the Pi |
+| — | A device that ships: identity at the factory, wi-fi from a phone | **done 2026-09-26** — porch-2 from a birth certificate, set up from a phone, claimed in the app |
+| — | Clips of the right length | **fixed 2026-09-26** — every clip claimed 204 hours; see "The clock" |
 
-### Read this first: nothing after Step 5 has run on hardware
+### Read this first: what has run on hardware, and what has not
 
-Steps 1–3 and 5 were confirmed on the real Pi. Everything after them — the
-LiveKit rewrite of `webrtc-video.py`, echo cancellation, `porchlightd`'s
-`script` media backend, its `gpio` input and LED backends, and now
-`pi/provision.sh` and everything about reconnecting — was written on the
-Windows host and **has never run on the Pi**. Do not read the confident tone of
-the sections below as evidence.
+Steps 1–3 and 5 were confirmed on the real Pi, and on 2026-09-26 so was the
+doorbell around the call: `provision.sh --image --apply`, firstboot, the setup
+access point driven from a phone, the claim in the app, and then the button,
+the PIR, the chime, and fifteen-second clips recorded and uploaded — all as
+systemd services on a unit that is now called `porch-2`.
+
+What **has still never run on the Pi**: the live call itself (`webrtc-video.py`
+publishing to LiveKit, and `porchlightd`'s `script` media backend starting it),
+echo cancellation, and reconnecting after the link drops. Those were written on
+the Windows host. Do not read the confident tone of the sections below as
+evidence for them.
 
 What *was* verified, and how:
 
@@ -83,19 +91,20 @@ What *was* verified, and how:
 | A rejected credential is permanent; an unreachable server is not | same, both paths exercised |
 | The LiveKit SDK's real API surface | installed `livekit` 1.1.19 on the dev host and read it |
 | That the SDK takes the *address* of a video buffer rather than copying it | read `_utils.get_address` — which is why frames are copied with `bytes()` |
-| `build_media_command`, the config reader, the I420 size rule | `ctest`, 91 passing |
+| `build_media_command`, the config reader, the I420 size rule | `ctest`, 92 passing — in WSL, and on the Pi with GPIO on |
 | The fault LED, and that a later plain outage cannot cancel it | `ctest` — it is core logic, so it needs no link at all |
 | The LED blink table | `ctest` — it is deliberately free of libgpiod so it can be |
 | That the GPIO code matches libgpiod's real v2 API | compiled against upstream 2.2's own `gpiod.h`, `-Wall -Wextra -Wpedantic -Wshadow`, clean |
 | That a rising edge means "pressed" on an active-low line | read it out of `linux/gpio.h`: v2 edges are logical, "inactive to active" |
-| **The GStreamer pipeline** | **not at all.** There is no GStreamer on this host or in WSL |
-| **Any GPIO line actually moving** | **not at all.** No GPIO on this host, and libgpiod 2.x is not even packaged for Ubuntu 24.04 |
-| **`pi/provision.sh`** | **only the survey.** `bash -n`, and a dry run in WSL that printed the 19 changes it would make. Nothing has been applied anywhere |
+| The recorder's pipeline | on the Pi, 2026-09-26: `check-clip.py --drill`, then six real clips of 15.2 s. **The call's pipeline: not at all** — there is no GStreamer on this host or in WSL |
+| GPIO lines moving | on the Pi, 2026-09-26: the button on 24 and the PIR on 23 raise events under systemd, built against the Pi's libgpiod 2.2.1 |
+| `pi/provision.sh` | on the Pi, 2026-09-26: `--image --apply`, then `--verify` 3 of 3. It kept a days-old binary over a fresh build; fixed to compare them |
+| firstboot and the phone setup | on the Pi, 2026-09-26: porch-2 from a birth certificate, `Porchlight-Y6YK` joined from a phone, home wi-fi joined, claimed in the app. It left `/etc/hosts` stale; fixed |
 | The bridge's restart backoff, and the fault LED end to end | **drilled in WSL.** Started the daemon with no credential: fault at once, restarts at 1, 2, 4, 8 s, no fork loop. Wrote the credential while it ran and it came up on the next tick with no restart |
 | That arming a timerfd for zero seconds disarms it | the same drill printed `starting the bridge again in 0s`, which is how the truncation was found. Both ends of that subtraction now use one `now` |
-| **`--probe`** | **not at all.** It needs a server and a socket, and the one thing this host cannot do is reach its own port from WSL |
+| `--probe` | on the Pi, 2026-09-26, as the second proof of `--verify` |
 
-So on the Pi, in this order — each one isolates a different half:
+So for the call, on the Pi, in this order — each one isolates a different half:
 
 ```bash
 ./check-livekit.sh http://192.168.0.219:4000 porch-1   # the parts, before the whole
@@ -218,9 +227,18 @@ and nothing comes out the other end — while audio, stamped against its own
 clock, runs perfectly and hides the cause.
 
 The fix is one line, `pipeline.use_clock(Gst.SystemClock.obtain())`, and it is
-still in `webrtc-video.py` for exactly the same reason. `porchlightd`'s recorder
-cannot call it from a `gst-launch` command line, so it makes the card decline
-the job instead with `provide-clock=false` — asserted in `pipeline_test.cpp`.
+still in `webrtc-video.py` for exactly the same reason. **The recorder needs it
+too, and a `gst-launch-1.0` command line cannot make that call** — so the
+recorder is now `pi/record-clip.py`: `gst-launch -e` plus `--system-clock`.
+
+It used to make the card decline the job instead, with `alsasrc
+provide-clock=false`, which a unit test asserted — and **that never worked**.
+Every clip came out as ten video frames spread over 204 hours, which a player
+shows as a clip 204 hours long. `pi/check-clip.py --drill` found it on
+2026-09-26 by recording six seconds eight ways: `provide-clock=false`,
+`slave-method=none` and a 40 ms card buffer all failed identically, and only
+the pinned clock recorded a clip. **A test that reads a command line proves the
+command line, not the clip.**
 
 `videotestsrc` paces itself off whichever clock the pipeline chose, so Steps 1–3
 were immune by accident and this only appeared at Step 5. Every cheap test
@@ -235,7 +253,8 @@ misses it:
 | camera + `--audio alsa` | **stalls** | the only combination that has both |
 
 **So the bisect that finds it is `--audio none`, not any amount of
-`gst-launch`.**
+`gst-launch`** — and for a clip, `check-clip.py --drill`, which reads the
+track timings back out of the file rather than trusting the exit code.
 
 ### The camera
 
@@ -304,7 +323,8 @@ amixer -c 2 sset "Speaker" 0%     # restore with 82%
 
 ### Getting a device online, and keeping it there
 
-**Written 2026-09-25, and none of it has run on a Pi.**
+**Written 2026-09-25. Provisioning ran on the Pi on 2026-09-26; reconnecting
+has still never been drilled there.**
 
 Provisioning is one script now. `pi/provision.sh` surveys by default and
 changes nothing; `--apply` carries it out; `--verify` runs only the proofs at
@@ -361,8 +381,13 @@ socket for up to thirty seconds.
 
 ### A device that ships, and the two programs that make it one
 
-**Written 2026-09-25. None of it has run on a Pi, and the half that needs a
-radio cannot be run anywhere else.**
+**Written 2026-09-25, and run end to end on the Pi on 2026-09-26** — once, by
+hand: a birth certificate minted as `porch-2`, `provision.sh --image --apply`,
+the home network deleted, a reboot, and a phone that found `Porchlight-Y6YK`,
+got the page and the claim code, handed over the home wi-fi, and claimed the
+doorbell in the app. The order that isolates the halves is to start
+`porchlight-firstboot` by hand and run `provision.sh --verify` *while SSH still
+works*, and only then take the wi-fi away.
 
 The device is being built to go to customers, which invalidated the way it was
 provisioned and nothing else. The credential model survives intact — per
@@ -425,12 +450,20 @@ IPC. Two patterns live in the Python and nowhere else, cross-referenced from
 `led_patterns.h` so the whole vocabulary is readable in one place.
 
 **What can be tested here, and what cannot.** `pi/tests/firstboot-drill.sh` is
-27 checks over every path of firstboot, and passes — it only writes files.
+31 checks over every path of firstboot, and passes — it only writes files.
 `pi/tests/setup-drill.sh` drives the whole setup flow against `--fake-nm`, a
 pretend radio, and passes: the page, the captive-portal probes, a refused
 password coming back as a sentence, and a good one ending the process with exit
 0. **`nmcli`, the access point, the scan ordering, the dnsmasq redirect and the
-LED are not tested by anything and cannot be** on a machine with no radio.
+LED are not tested by anything automated and cannot be** on a machine with no
+radio; the one run on the Pi above is their only evidence.
+
+**Two traps on the Windows side of minting.** In Git Bash, `node` is wrapped
+by winpty, which refuses a redirected stdout: `node scripts/mint-device.mjs
+--json > porchlight.json` prints "stdout is not a tty" and leaves an empty
+file, having minted nothing. Use `node.exe`. And PowerShell's `>` writes a
+byte-order mark, which firstboot now accepts (`utf-8-sig`) and plain
+`json.load` does not.
 
 Everything the app server has to change for this is in
 [docs/app-server-changes.md](docs/app-server-changes.md), and the one with a
@@ -461,7 +494,11 @@ of the pad counters from Step 5.
 
 ## The machines
 
-**The Pi** — `192.168.0.129`, user `israellior1`. SSH is open but **password only**;
+**The Pi** — hostname **`porch-2`** since 2026-09-26, when firstboot renamed
+it; reach it as `porch-2.local`. It was `192.168.0.129`, and the address may
+have moved when it rejoined the home wi-fi through the setup page. It is
+provisioned as device `porch-2`; `porch-1` is an older record on the server,
+still claimed. User `israellior1`. SSH is open but **password only**;
 no key is installed, so Claude cannot run commands there. To change that:
 `ssh-keygen -t ed25519` then append the public key to `~/.ssh/authorized_keys` on the Pi.
 
@@ -505,6 +542,11 @@ would grant every future Node process inbound access on the home network:
 New-NetFirewallRule -DisplayName "Pi intercom signaling (3000)" -Direction Inbound `
   -Action Allow -Protocol TCP -LocalPort 3000 -Profile Private -RemoteAddress LocalSubnet
 ```
+
+Port 3000 is history; the app server on **4000** is what the Pi reaches now,
+and it needs the same rule with `-LocalPort 4000`. `PUBLIC_API_URL` in the
+backend's `.env` is what gets baked into every birth certificate, so it must
+be this host's LAN address, never `localhost`.
 
 To check which way round it is now:
 
@@ -802,7 +844,7 @@ the other. Options are a `dmix` plug so both can open it, or routing the chime
 through the call's own pipeline. Not yet decided, and it is a real gap.
 
 **7. ~~Nothing installs the call on a Pi.~~ `pi/provision.sh` does, as of
-2026-09-25 — and it has never been run.** It installs the packages, the
+2026-09-25, and ran on the Pi on 2026-09-26.** It installs the packages, the
 `porchlight` user and its groups, the venv with `--system-site-packages`, all
 three Python halves, the config, the credential, the chime and the unit, then
 proves the link three ways and refuses to enable the service until it passes.
@@ -818,6 +860,20 @@ anyway for the unit file and the example config.
 
 What remains is packaging: there is still no `.deb` and no image, so the tree
 has to reach the Pi somehow before any of this runs.
+
+**8. Probably two seconds lost at the start of every clip.** Every recording
+prints `MESA: error: Opening /dev/dri/renderD128 failed: Permission denied`
+from a process of its own, and the camera starts about two seconds after the
+button. The likely reading, **unconfirmed**: the `porchlight` user has no home
+directory, so GStreamer cannot save its plugin registry and
+`gst-plugin-scanner` rescans every plugin on every clip — the MESA line being
+the scanner loading the GL and Vulkan plugins. The likely fix is
+`Environment=GST_REGISTRY=/var/lib/porchlight/gst-registry.bin` in the unit.
+It matters because the first seconds are when somebody walks up to the door.
+
+**9. The clips are dark.** Seen in the app on 2026-09-26 and not investigated:
+the scene, the exposure, and auto-exposure still settling on a camera that is
+opened fresh for every clip are all candidates.
 
 
 ## The codebase
@@ -864,6 +920,9 @@ pi/server-bridge.py     porchlightd's WebSocket to the app server, as a child
                         the socket - a network can carry one and drop the other.
 pi/upload-clip.py       One clip, in three steps - signed url, PUT, confirm. Judged
                         by its exit code alone; only the confirm earns a 0.
+pi/record-clip.py       The recorder, as porchlightd's child: gst-launch-1.0 -e
+                        plus the clock pin gst-launch cannot make. SIGINT is
+                        EOS, and the exit code is the verdict.
 pi/porchlight-firstboot.py
                         One image becomes one doorbell. Reads the birth
                         certificate off the FAT boot partition, installs the
@@ -897,6 +956,10 @@ pi/check-livekit.sh     The same for the call: the venv and the SDK, the GStream
                         elements, the credential and what the two tokens grant,
                         and whether anything else holds the camera or the card.
                         Read-only. Run it before the first call on a Pi.
+pi/check-clip.py        Reads the timing out of an MP4 - movie length, each
+                        track's media, the edit lists. --drill records six
+                        seconds several ways on the Pi, one half removed at a
+                        time. It is what found the 204-hour clips.
 pi/fix-wm8960.sh        Surveys Waveshare's installer and undoes it reversibly.
                         --apply moves files to /var/backups/wm8960-fix, --restore
                         puts them back. Refuses to act on anything ambiguous.
@@ -1045,8 +1108,8 @@ those steps were.
 
 - **Comments say why, not what.** The existing code explains the non-obvious
   decisions (why a video frame is copied with `bytes()` rather than passed as a
-  memoryview, why the credential travels as a path, why `provide-clock=false` is
-  on the recorder's `alsasrc` and nowhere else). Match that.
+  memoryview, why the credential travels as a path, why the recorder pins its
+  clock only when the camera is the source). Match that.
 - **Counted, never inferred.** A track publishing, a pad appearing and a
   bitrate in the viewer's browser can all look healthy while nothing moves. Every
   direction has a counter at the point where it hands over, and the two-second

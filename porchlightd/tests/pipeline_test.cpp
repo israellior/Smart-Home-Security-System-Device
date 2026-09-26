@@ -35,20 +35,27 @@ RecorderConfig camera_config() {
 
 // alsasrc offers the sound card as the pipeline clock; libcamerasrc offers none
 // and timestamps from the system monotonic clock whatever the pipeline chose.
-// With both present the video branch stalls within a second while audio runs on
-// perfectly. webrtc-video.py fixes it with pipeline.use_clock(); there is no
-// such call from a gst-launch command line, so the card has to decline instead.
-TEST(Pipeline, CameraWithAlsaMakesTheSoundCardGiveUpTheClock) {
-  EXPECT_TRUE(has(build_pipeline(camera_config(), "/tmp/x.mp4"), "provide-clock=false"));
+// With both present every clip came out as ten video frames spread over 204
+// hours. Pinning the clock is the only thing the Pi recorded correctly, and
+// gst-launch cannot do it - hence record-clip.py and this flag.
+TEST(Pipeline, CameraWithAlsaPinsTheSystemClock) {
+  EXPECT_TRUE(has(build_pipeline(camera_config(), "/tmp/x.mp4"), "--system-clock"));
 }
 
-// And only then. The videotestsrc path was verified against a real card with
-// the card providing the clock, and videotestsrc follows whichever clock the
-// pipeline picked - so there is nothing to fix there and nothing to disturb.
+// This was the previous fix, and a test asserted it for four days while every
+// clip was broken. check-clip.py recorded it on the Pi: no better than nothing.
+// Kept out so nobody reads its presence as the thing that makes clips work.
+TEST(Pipeline, CameraDoesNotRelyOnTheCardDecliningTheClock) {
+  EXPECT_FALSE(has(build_pipeline(camera_config(), "/tmp/x.mp4"), "provide-clock=false"));
+}
+
+// And only with the camera. The videotestsrc path was verified against a real
+// card with the card providing the clock, and videotestsrc follows whichever
+// clock the pipeline picked - so there is nothing to fix there to disturb.
 TEST(Pipeline, TestSourceWithAlsaLeavesTheClockAlone) {
   RecorderConfig config = camera_config();
   config.video_source = "test";
-  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4"), "provide-clock=false"));
+  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4"), "--system-clock"));
 }
 
 // Left alone libcamera picks the imx708's binned 1536x864 mode, which reads
@@ -79,13 +86,19 @@ TEST(Pipeline, TestSourceCarriesNoCameraProperties) {
   EXPECT_FALSE(contains(args, "format=I420"));
 }
 
-// -e is what turns SIGINT into EOS, and EOS is what writes the moov atom. A
-// clip recorded without it is a file that will not play.
-TEST(Pipeline, AlwaysFlushesTheMuxerAndNamesTheFile) {
-  const auto args = build_pipeline(camera_config(), "/tmp/clip.mp4");
+// record-clip.py is what turns SIGINT into EOS, and EOS is what writes the
+// moov atom. Everything after -- is handed to parse_launchv untouched, so a
+// flag of its own landing on the wrong side would be a parse failure.
+TEST(Pipeline, RunsTheRecorderScriptAndNamesTheFile) {
+  RecorderConfig config = camera_config();
+  config.script = "/opt/x/record-clip.py";
+  const auto args = build_pipeline(config, "/tmp/clip.mp4");
   ASSERT_FALSE(args.empty());
-  EXPECT_EQ(args.front(), "gst-launch-1.0");
-  EXPECT_TRUE(has(args, "-e"));
+  EXPECT_EQ(args.front(), "/opt/x/record-clip.py");
+  const auto separator = std::find(args.begin(), args.end(), std::string{"--"});
+  ASSERT_NE(separator, args.end());
+  EXPECT_LT(std::find(args.begin(), args.end(), std::string{"--system-clock"}), separator);
+  EXPECT_EQ(*(separator + 1), "mp4mux");
   EXPECT_TRUE(contains(args, "location=\"/tmp/clip.mp4\""));
 }
 

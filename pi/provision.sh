@@ -152,7 +152,7 @@ else
   info "survey only - nothing here changes the machine. Add --apply."
 fi
 
-for needed in pi/server-bridge.py pi/upload-clip.py pi/webrtc-video.py               pi/porchlight-firstboot.py pi/porchlight-setup.py; do
+for needed in pi/server-bridge.py pi/upload-clip.py pi/record-clip.py pi/webrtc-video.py               pi/porchlight-firstboot.py pi/porchlight-setup.py; do
   [ -f "$SOURCE/$needed" ] || bad "$SOURCE/$needed is missing - wrong --source?"
 done
 
@@ -250,10 +250,10 @@ as_root chown "$SERVICE_USER" "$SPOOL"
 
 head2 "The Python halves"
 
-# All three are installed, not just the two the daemon runs directly: the call
+# All of them are installed, not just the ones the daemon runs directly: the call
 # is started by the daemon through the venv's interpreter, and a device with a
 # working socket and no webrtc-video.py fails only when somebody presses Watch.
-for script in server-bridge.py upload-clip.py webrtc-video.py               porchlight-firstboot.py porchlight-setup.py; do
+for script in server-bridge.py upload-clip.py record-clip.py webrtc-video.py               porchlight-firstboot.py porchlight-setup.py; do
   if [ -f "$LIB/$script" ] && cmp -s "$SOURCE/pi/$script" "$LIB/$script"; then
     ok "$script is current"
   else
@@ -298,11 +298,23 @@ fi
 
 head2 "The daemon"
 
-if [ -x "$BIN" ]; then
-  ok "$BIN is installed"
-elif [ -x "$SOURCE/porchlightd/build/porchlightd" ]; then
-  ok "a build exists at $SOURCE/porchlightd/build/porchlightd"
-  as_root install -m 0755 "$SOURCE/porchlightd/build/porchlightd" "$BIN"
+BUILT="$SOURCE/porchlightd/build/porchlightd"
+if [ -x "$BUILT" ]; then
+  # Compared, not just checked for. "Installed" used to be enough, and on the
+  # first real run it kept a days-old binary over a fresh build - one that had
+  # never had the GPIO backends compiled in.
+  if [ -x "$BIN" ] && cmp -s "$BUILT" "$BIN"; then
+    ok "$BIN is current"
+  else
+    if [ -x "$BIN" ]; then
+      info "$BIN differs from the build at $BUILT; replacing it"
+    else
+      ok "a build exists at $BUILT"
+    fi
+    as_root install -m 0755 "$BUILT" "$BIN"
+  fi
+elif [ -x "$BIN" ]; then
+  ok "$BIN is installed, and there is no build here to compare it with"
 else
   # Deliberately not built here. A build takes minutes and fails in ways worth
   # reading - a missing libgpiod 2.x above all - and burying that inside a

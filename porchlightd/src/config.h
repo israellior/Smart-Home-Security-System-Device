@@ -107,6 +107,9 @@ struct SpoolConfig {
 };
 
 struct RecorderConfig {
+  // gst-launch-1.0 -e with the clock pinned; see pi/record-clip.py for why
+  // gst-launch itself cannot record the camera and the card together.
+  std::filesystem::path script{"/usr/local/lib/porchlight/record-clip.py"};
   std::string video_source{"test"};  // test | libcamera
   std::string audio_source{"test"};  // test | alsa
   std::string audio_device{"hw:CARD=wm8960soundcard"};
