@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Working notes for this project. Read this first; update it at the end of any session
-that changes something here. Last updated 2026-09-26.
+that changes something here. Last updated 2026-09-28.
 
 **Also read [DESIGN.md](DESIGN.md)** and
 [docs/server-brief.md](docs/server-brief.md). This file describes the present.
@@ -11,10 +11,10 @@ brief is the contract with the app server, and **where this file and that one
 disagree, that one wins**.
 
 The five-step plan below is finished. What replaced it is a doorbell whose call
-publishes to LiveKit Cloud, and the single most important thing to know is that
-**the live call has still never run on the Pi** — though as of 2026-09-26 the
-doorbell around it has, from factory image to clips in the app. See "Read this
-first".
+publishes to LiveKit Cloud. **As of 2026-09-28 the live call has run on the Pi
+in both directions**, started by `porchlightd` from the app's Watch button —
+picture and sound out, a viewer's voice out of the doorbell's speaker. What has
+still never been checked is echo cancellation. See "Read this first".
 
 ## What this is
 
@@ -61,9 +61,9 @@ the viewer is the app rather than a page served from here.
 | 2 | Add the Pi's microphone (Opus) | **done**, and since replaced |
 | 3 | Add browser mic → Pi speaker | **done** — it was a call |
 | 5 | Swap `videotestsrc` for `libcamerasrc` | **done 2026-09-22 — a real camera** |
-| 4 | Echo cancellation (`webrtcdsp`) | **written 2026-09-22 — never run on the Pi** |
-| — | The call publishes to LiveKit | **written 2026-09-22** — both tokens proven on the Pi 2026-09-26; **the call itself never run** |
-| — | `porchlightd` starts the call for real | **written 2026-09-22 — never run on the Pi** |
+| 4 | Echo cancellation (`webrtcdsp`) | **runs on the Pi 2026-09-28 — never listened for.** Whether it cancels is unknown |
+| — | The call publishes to LiveKit | **done 2026-09-28** — camera, mic and talk-back on the Pi, through the app |
+| — | `porchlightd` starts the call for real | **done 2026-09-28** — Watch in the app, `viewer-requested`, the call, and it ends itself |
 | — | The button, the PIR and the LED on real GPIO | **done 2026-09-26** — button, PIR and chime under systemd. LED line opens; its patterns not yet watched |
 | — | Provisioning, and a link that comes and goes | **provisioning done 2026-09-26** (`--image --apply`, `--verify` 3 of 3). Reconnecting never drilled on the Pi |
 | — | A device that ships: identity at the factory, wi-fi from a phone | **done 2026-09-26** — porch-2 from a birth certificate, set up from a phone, claimed in the app |
@@ -77,11 +77,16 @@ access point driven from a phone, the claim in the app, and then the button,
 the PIR, the chime, and fifteen-second clips recorded and uploaded — all as
 systemd services on a unit that is now called `porch-2`.
 
-What **has still never run on the Pi**: the live call itself (`webrtc-video.py`
-publishing to LiveKit, and `porchlightd`'s `script` media backend starting it),
-echo cancellation, and reconnecting after the link drops. Those were written on
-the Windows host. Do not read the confident tone of the sections below as
-evidence for them.
+On 2026-09-28 the live call ran too: Watch in the app, `porchlightd` starting
+`webrtc-video.py`, 30 fps and the mic published, and a viewer's voice heard
+from the speaker — **after one fix**, see "The speaker must not sync" below.
+During that run the Pi's Wi-Fi dropped for about ten seconds (LiveKit and the
+daemon's WebSocket timed out together) and both came back on their own, which
+is the only evidence so far for reconnecting.
+
+What **has still never been checked on the Pi**: whether echo cancellation
+actually cancels, and a deliberate reconnect drill. Do not read the confident
+tone of the sections below as evidence for them.
 
 What *was* verified, and how:
 
@@ -300,13 +305,41 @@ gets past both.
 `x264enc` runs at 30 fps. It no longer blocks the call, which does not encode in
 GStreamer at all, but it still constrains the recorder. Not yet investigated.
 
+### The speaker must not sync
+
+**Found 2026-09-28, on the first real call.** Everything worked except
+talk-back: the log read `talk: 102 frames/s, -15 dBFS` — real speech — and
+the speaker was silent. The tone test (`audiotestsrc ! … ! alsasink`) and the
+chime both played, so the card, the mixer and the amp were fine.
+
+The cause was `sync`. The playback chain's `appsrc` has `do-timestamp=true`,
+which stamps each buffer with the running time *as it is pushed*, and the
+pipeline declares no latency. So every buffer reaches `alsasink` a few
+milliseconds after the moment it is stamped for, and a syncing audio sink
+**discards late samples without posting anything**. The `level` element sits
+before the sink, which is why the counter looked healthy.
+
+`alsasink … sync=false` fixed it. It is safe because the audio coming out of
+LiveKit's `AudioStream` has already been paced by NetEq; the card only has to
+play it as it comes. The tone test did not catch this because `audiotestsrc`
+is not live and runs on the card's own clock, so nothing was ever late.
+
+**The level meter proves the audio reached the sink, not that the sink played
+it.** Same lesson as the pads in Step 5: count at the point of handover, and
+know which side of the handover the counter is on.
+
 ### Echo cancellation
 
-`webrtcdsp` on the capture branch and `webrtcechoprobe` on the playback branch,
-both in **one pipeline in one process** — they find each other by element name,
-and putting them in one pipeline is stronger than it needs to be and removes the
-question entirely. `--aec off` turns both off, and is automatic when there is no
-playback to cancel against.
+`webrtcdsp` on the capture pipeline and `webrtcechoprobe` on the playback
+pipeline, **in one process** — they find each other by element name. They were
+one pipeline once, and that made the camera wait for a viewer to speak; the
+`Media` docstring says why they must stay two. Playback starts first because
+`webrtcdsp` looks its probe up once, as it starts. `--aec off` turns both off,
+and is automatic when there is no playback to cancel against.
+
+With the speaker no longer syncing, the probe's idea of *when* audio was played
+is looser than it was. `delay-agnostic` is on for exactly this, so it should
+not matter — but it is one more reason to actually listen for echo.
 
 Only `echo-cancel` is set in the launch string. `delay-agnostic`,
 `high-pass-filter`, `noise-suppression` and `gain-control` go through
@@ -874,6 +907,12 @@ It matters because the first seconds are when somebody walks up to the door.
 **9. The clips are dark.** Seen in the app on 2026-09-26 and not investigated:
 the scene, the exposure, and auto-exposure still settling on a camera that is
 opened fresh for every clip are all candidates.
+
+**10. The call's log arrives in bursts, up to a minute late.** Under systemd,
+`webrtc-video.py`'s stdout is a pipe, so Python block-buffers it: on
+2026-09-28 dozens of two-second reports were stamped with the same second in
+the journal. It makes timing anything from the log misleading.
+`PYTHONUNBUFFERED=1` in the unit, or `-u` on the interpreter, would fix it.
 
 
 ## The codebase

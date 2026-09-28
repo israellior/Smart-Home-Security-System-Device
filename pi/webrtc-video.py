@@ -199,9 +199,14 @@ PLAYBACK = (
     # talk button, which may be never. Without this the speaker sits in PAUSED
     # indefinitely, posting no error because nothing has failed.
     #
-    # It costs nothing: async only governs waiting for preroll. sync stays on,
-    # so what does arrive is still played against the pipeline clock.
-    ' ! alsasink name=speaker async=false device="{device}"'
+    # sync=false is what makes it audible. do-timestamp stamps each buffer with
+    # the running time at the moment it is pushed, and this pipeline declares no
+    # latency, so by the time a buffer has crossed the queue and the converters
+    # it is a few milliseconds late - every buffer, always. A syncing audio sink
+    # discards late samples, silently: on the first real run the level element
+    # above read -15 dBFS of speech while the speaker played nothing. NetEq has
+    # already paced this audio, so the card plays it as it comes.
+    ' ! alsasink name=speaker async=false sync=false device="{device}"'
     " buffer-time=40000 latency-time=10000"
 )
 

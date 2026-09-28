@@ -106,8 +106,10 @@ server host any more; changed files reach the Pi by `scp`.
 
 ## Worth knowing
 
-- **Live view has never been exercised end to end.** Everything above alerts
-  and clips is confirmed on hardware; the Watch path is not.
+- **Live view works end to end as of 2026-09-28**, including a viewer's voice
+  out of the doorbell's speaker. Echo cancellation has not been listened for.
+  The device is now `porch-2` (`porch-2.local`); the `porch-1` names above are
+  from before firstboot renamed it.
 - **The camera and the sound card go to one process at a time.** The daemon
   stops a recording before starting a call for that reason. A stray
   `rpicam-hello` or a second `porchlightd` will take either, and the failure
