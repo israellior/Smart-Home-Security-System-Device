@@ -16,15 +16,16 @@ struct ConfigError : std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
-// Which implementation each interface gets. Only the fakes exist today.
+// Which implementation each interface gets. Each has one real backend now;
+// the names stay so a third input - a kernel driver, say - is one more branch.
 struct Backends {
-  std::string input{"stdin"};
-  std::string led{"console"};
-  std::string chime{"console"};
-  std::string server{"log"};
-  std::string uploader{"log"};
-  std::string media{"stub"};
-  std::string recorder{"fake"};
+  std::string input{"gpio"};
+  std::string led{"gpio"};
+  std::string chime{"alsa"};
+  std::string server{"bridge"};
+  std::string uploader{"script"};
+  std::string media{"script"};
+  std::string recorder{"gstreamer"};
 };
 
 struct ServerConfig {

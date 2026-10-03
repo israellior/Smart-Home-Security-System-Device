@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Working notes for this project. Read this first; update it at the end of any session
-that changes something here. Last updated 2026-09-28.
+that changes something here. Last updated 2026-10-01.
 
 **Also read [DESIGN.md](DESIGN.md)** and
 [docs/server-brief.md](docs/server-brief.md). This file describes the present.
@@ -239,8 +239,8 @@ recorder is now `pi/record-clip.py`: `gst-launch -e` plus `--system-clock`.
 It used to make the card decline the job instead, with `alsasrc
 provide-clock=false`, which a unit test asserted — and **that never worked**.
 Every clip came out as ten video frames spread over 204 hours, which a player
-shows as a clip 204 hours long. `pi/check-clip.py --drill` found it on
-2026-09-26 by recording six seconds eight ways: `provide-clock=false`,
+shows as a clip 204 hours long. `pi/check-clip.py --drill` (removed
+2026-10-01, in the git history) found it on 2026-09-26 by recording six seconds eight ways: `provide-clock=false`,
 `slave-method=none` and a 40 ms card buffer all failed identically, and only
 the pinned clock recorded a clip. **A test that reads a command line proves the
 command line, not the clip.**
@@ -258,8 +258,8 @@ misses it:
 | camera + `--audio alsa` | **stalls** | the only combination that has both |
 
 **So the bisect that finds it is `--audio none`, not any amount of
-`gst-launch`** — and for a clip, `check-clip.py --drill`, which reads the
-track timings back out of the file rather than trusting the exit code.
+`gst-launch`** — and for a clip, reading the track timings back out of the
+file rather than trusting the exit code, which is what `check-clip.py` did.
 
 ### The camera
 
@@ -609,8 +609,7 @@ The WM8960 HAT covers the GPIO header, not the CSI connector, but it makes the
 ribbon awkward to route — seat the ribbon before the HAT goes back on.
 
 If the sensor is not detected, the ribbon is the cause far more often than
-anything else, and `check-camera.sh` distinguishes "kernel found no sensor" from
-"libcamera cannot open it" from "GStreamer cannot".
+anything else.
 
 **Telling a dead cable from a software fault, in one command.** `camera_auto_detect`
 runs in the VideoCore firmware before Linux exists; when it finds nothing there is
@@ -657,7 +656,7 @@ correct one for this module. No `config.txt` change was needed; `camera_auto_det
 does the whole job.
 
 `camera_auto_detect=1` in `/boot/firmware/config.txt` is what loads the sensor
-overlay; it is the default, and `check-camera.sh` checks it.
+overlay; it is the default.
 
 **The audio HAT** — Waveshare WM8960 Hi-Fi Sound Card HAT. An I²S codec on the GPIO
 header, not USB. Two microphones on the board, and speaker + headphone out, so both
@@ -675,11 +674,12 @@ both `Input Boost Mixer *INPUT1` at `100%`, and a 3 s recording peaked at full
 scale on both channels (RMS −19.9 dBFS). RMS is a healthy speaking level, so the
 peaks are headroom, not loudness — but clipped samples cannot be un-clipped, and
 Step 4's `webrtcdsp` cancels a clipped echo far worse than a clean one. Lower
-`Capture` first, one control at a time, and re-run the recording test:
+`Capture` first, one control at a time, and re-record to check:
 
 ```bash
 amixer -c 2 sset "Capture" 80%
-./check-audio.sh                 # want peak < 99%, RMS still around -20 dBFS
+arecord -D hw:CARD=wm8960soundcard -f S16_LE -r 48000 -c 2 -d 3 -V stereo /dev/null
+                                 # want peak < 99%, RMS still around -20 dBFS
 sudo alsactl store               # only once it is right
 ```
 
@@ -725,7 +725,7 @@ cannot install.
 
 **1. ~~The WM8960 cannot be opened.~~ It records. Do not "fix" it.**
 
-**Resolved 2026-09-18 — the EINVAL is not reproducible.** `check-audio.sh` opened
+**Resolved 2026-09-18 — the EINVAL is not reproducible.** A plain recording opened
 `hw:2,0` at 48 kHz stereo on the first try and captured real audio at
 **−19.9 dBFS RMS**, and `webrtc-video.py` built the `alsasrc → opusenc` pipeline
 against `hw:CARD=wm8960soundcard` without complaint. No repair was applied; the
@@ -739,8 +739,7 @@ Two earlier claims here were simply wrong and have been struck:
   original test failed was never established** and is now moot. If it ever comes
   back, do not trust this section: re-test with a plain `arecord` first.
 
-What survives is a real but non-blocking fragility, which is why `fix-wm8960.sh`
-is kept: the kernel is tainted, two machine drivers still collide at every boot,
+What survives is a real but non-blocking fragility: the kernel is tainted, two machine drivers still collide at every boot,
 and DKMS will rebuild Waveshare's module on the next kernel update. It works
 today; it may not survive an upgrade. **Working beats clean — leave it alone
 until it actually breaks.**
@@ -774,37 +773,14 @@ to do the work.
 - `wm8960-soundcard.service` is enabled and active (and marked executable, which
   systemd complains about at boot)
 
-**`pi/fix-wm8960.sh` is the tool if it does break.** Not needed now. It replaces the
-hand-run recon that used to be listed here, because the recon and the cleanup have
-to agree about what they found.
-
-```bash
-scp pi/fix-wm8960.sh israellior1@192.168.0.129:   # nothing serves it any more
-chmod +x fix-wm8960.sh
-./fix-wm8960.sh              # survey. Read-only, and the default.
-sudo ./fix-wm8960.sh --apply # then: sudo reboot
-sudo ./fix-wm8960.sh --restore   # if the card is worse afterwards
-```
-
-`--apply` **never deletes**. Everything it takes away is moved to
-`/var/backups/wm8960-fix` with a manifest, and `--restore` puts all of it back,
-which is what makes the "a wrong `rm` costs a reflash" risk survivable.
-
-The survey decides each module's origin two ways and makes them agree: where the
-file sits (`updates/` and `extra/` are Waveshare's, `kernel/sound/soc/` is the
-kernel's) *and* what `modinfo -F intree` says about it. That second test is the one
-that matters — it catches an installer that **overwrote** the in-tree module rather
-than shadowing it, which needs `apt-get install --reinstall` and not a move. On that
-finding the script refuses to `--apply` and names the package.
-
-It checks the overlay the same way: on Raspberry Pi OS the `.dtbo` files in
-`/boot/firmware/overlays` are *copies* that dpkg does not own, so the pristine
-original under `/usr/lib/linux-image-$(uname -r)/overlays/` is the yardstick for
-whether Waveshare replaced it.
-
-After the reboot the in-tree driver starts from **its own** mixer defaults, so the
-routing verified below will not have carried over. Run `./check-audio.sh`, apply the
-`amixer` lines it prints, then `sudo alsactl store`.
+**`pi/fix-wm8960.sh` was the tool for when it does break**, and was removed on
+2026-10-01 with the other one-off checks. It is in the git history: `git show
+18c8f4b:pi/fix-wm8960.sh > fix-wm8960.sh`, then copy it to the Pi. It surveyed
+by default, and `--apply` moved Waveshare's files to `/var/backups/wm8960-fix`
+rather than deleting them, so `--restore` could undo it. After it, the in-tree
+driver starts from **its own** mixer defaults, so the routing verified below
+will not carry over and has to be set again with `amixer`, then
+`sudo alsactl store`.
 
 **2. ~~Still not a git repository.~~ Fixed 2026-09-20** — but it cost something
 first. The PCM intercom was deleted on 2026-09-19, eight files and half of
@@ -894,15 +870,19 @@ anyway for the unit file and the example config.
 What remains is packaging: there is still no `.deb` and no image, so the tree
 has to reach the Pi somehow before any of this runs.
 
-**8. Probably two seconds lost at the start of every clip.** Every recording
-prints `MESA: error: Opening /dev/dri/renderD128 failed: Permission denied`
-from a process of its own, and the camera starts about two seconds after the
-button. The likely reading, **unconfirmed**: the `porchlight` user has no home
-directory, so GStreamer cannot save its plugin registry and
-`gst-plugin-scanner` rescans every plugin on every clip — the MESA line being
-the scanner loading the GL and Vulkan plugins. The likely fix is
-`Environment=GST_REGISTRY=/var/lib/porchlight/gst-registry.bin` in the unit.
-It matters because the first seconds are when somebody walks up to the door.
+**8. ~~Two seconds lost at the start of every clip.~~ Cause confirmed and
+fixed 2026-10-02; the new unit is not yet installed on the Pi.** The
+`porchlight` user's home is `/home/porchlight`, which does not exist, so
+GStreamer could not save its plugin registry and rescanned every plugin on
+every clip. `GST_DEBUG=GST_REGISTRY:4` showed the scan taking 1.54 s and then
+`registry update failed ... No such file or directory`. The MESA line on every
+clip was that scan loading the GL and Vulkan plugins. The fix is
+`Environment=GST_REGISTRY=/var/lib/porchlight/gst-registry.bin` in
+`porchlightd.service`. By hand on the Pi, `gst-inspect-1.0 fakesink` as
+`porchlight` went from 1.7 s every run to 0.065 s once cached. Still to check:
+the clip start against the alert, once the unit is installed. Even with the
+fix, the camera starts cold on every clip; the full answer is a pre-roll
+buffer, not yet designed.
 
 **9. The clips are dark.** Seen in the app on 2026-09-26 and not investigated:
 the scene, the exposure, and auto-exposure still settling on a camera that is
@@ -944,10 +924,9 @@ porchlightd/            The C++20 doorbell daemon, with its own README and its o
                         owns the timer that blinks it; src/io/led_patterns.h is
                         the blink table, free of libgpiod so the tests can read
                         it on a machine with no GPIO. All behind -DPORCHLIGHT_GPIO.
-public/porchlightd.tar.gz   Not tracked. `git archive` output, so the daemon's
-                        source can reach the Pi - it has no clone. Stale by
-                        default: regenerate it after every change. Nothing
-                        serves it any more; it is scp'd. See Conventions.
+                        Every backend is a real one: the keyboard-driven fakes
+                        went on 2026-10-01, so the daemon runs on the Pi only
+                        and the unit tests run anywhere.
 pi/webrtc-video.py      The live call. Camera and mic into LiveKit under a publisher
                         token, a viewer's mic back out of the speaker under a
                         listener token, webrtcdsp between them. No SDP, no socket
@@ -982,36 +961,28 @@ pi/tests/               Shell drills for both, no Pi needed. firstboot-drill.sh
 pi/provision.sh         A fresh Pi to a connected doorbell, in one pass: packages,
                         user, venv, scripts, config, credential, unit - then the
                         three proofs, and it will not enable the service until
-                        they pass. Surveys by default like fix-wm8960.sh; --apply
+                        they pass. Surveys by default and changes nothing; --apply
                         acts, --verify runs only the proofs. Never takes the
                         credential as an argument. --image is the factory
                         build: enable the boot units, expect no credential.
-pi/check-audio.sh       Read-only hardware audit: card, driver conflicts, mixer, a real
-                        recording with levels, GStreamer elements, Python bindings.
-pi/check-camera.sh      The same for the camera: overlay, sensor driver, what
-                        libcamera sees, a real still, and timed GStreamer capture
-                        through each encoder. Read-only.
-pi/check-livekit.sh     The same for the call: the venv and the SDK, the GStreamer
+pi/check-livekit.sh     Read-only check of the call: the venv and the SDK, the GStreamer
                         elements, the credential and what the two tokens grant,
                         and whether anything else holds the camera or the card.
                         Read-only. Run it before the first call on a Pi.
-pi/check-clip.py        Reads the timing out of an MP4 - movie length, each
-                        track's media, the edit lists. --drill records six
-                        seconds several ways on the Pi, one half removed at a
-                        time. It is what found the 204-hour clips.
-pi/fix-wm8960.sh        Surveys Waveshare's installer and undoes it reversibly.
-                        --apply moves files to /var/backups/wm8960-fix, --restore
-                        puts them back. Refuses to act on anything ambiguous.
 ```
+
+**One-off hardware checks were removed on 2026-10-01**: `check-audio.sh`,
+`check-camera.sh`, `check-clip.py` and `fix-wm8960.sh`. Each did its job once
+— the card, the ribbon, the 204-hour clips, the driver collision — and all
+four are in the git history (`git show 18c8f4b:pi/<name>`) if one is needed
+again. `package.json` and `package-lock.json` went with them.
 
 **The LAN development stub was deleted on 2026-09-25**: `server.js`, which
 served the Pi's scripts by name and ran a signaling switchboard nothing used;
 `public/webrtc.html`, the Steps 1-3 viewer that no Pi had answered since the
 call moved to LiveKit; `tools/signal-test.js`, the fake peer for exercising
 that switchboard; and `tools/clip-stub.js`, the faked clip endpoints. All four
-are in the git history and nothing in the tree is Node any longer —
-`package.json` still declares express, `ws` and a `start` script for a file
-that is gone.
+are in the git history and nothing in the tree is Node any longer.
 
 What went with them is the **delivery mechanism**: nothing serves `pi/*` or the
 tarball, so both reach the Pi by `scp`. For a device that ships to somebody's
@@ -1157,30 +1128,28 @@ those steps were.
   `set_focus`, `set_sensor_mode` and `tune_dsp` all read `list_properties()`
   first and print a note. A missing property inside `parse_launch` takes the
   whole pipeline down.
-- **No build step, no framework, no bundler.** Plain files served statically.
-  The one exception is the Pi's venv, which the LiveKit SDK forces — see open
+- **No build step, no framework, no bundler** for the scripts. The one exception is the Pi's venv, which the LiveKit SDK forces — see open
   problem 7.
 - **"One at a time, and a new one replaces the old."** Still how the daemon's
   socket signs in (`role: "device"`, replacing its own predecessor). It no
   longer applies to the call: **one media process serves every viewer**, because
   the Pi publishes one stream and LiveKit copies it out. 1–5 viewers per Pi is
   the target, and that now costs the device nothing.
-- **Scripts reach the Pi by `curl` from the server**, never by paste — an indented
-  heredoc terminator silently breaks a pasted script. Files here use LF endings; if
+- **Scripts reach the Pi by `scp`**, never by paste — an indented heredoc
+  terminator silently breaks a pasted script. Files here use LF endings; if
   one ever arrives with CRLF, `sed -i 's/\r$//'`.
 - **`porchlightd`'s source reaches the Pi the same way, as a tarball.** There is no
-  git clone on the Pi, so `git pull` there is not a thing — it fetches an archive
-  from `public/`, which express already serves statically. **Regenerate it after
+  git clone on the Pi, so `git pull` there is not a thing. **Regenerate it after
   every change or the Pi silently builds yesterday's code**, which is exactly what
   happened on 2026-09-22:
 
   ```bash
   git archive --format=tar.gz --prefix=porchlightd/ HEAD:porchlightd \
-    -o public/porchlightd.tar.gz
+    -o /tmp/porchlightd.tar.gz
   ```
 
   ```bash
-  scp public/porchlightd.tar.gz israellior1@192.168.0.129:   # nothing serves it
+  scp /tmp/porchlightd.tar.gz israellior1@porch-2.local:
   tar xzf porchlightd.tar.gz && cd porchlightd
   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j4
   ctest --test-dir build --output-on-failure
@@ -1195,14 +1164,13 @@ those steps were.
   config out of `porchlightd/`. Whole-repo archive, then:
 
   ```bash
-  git archive --format=tar.gz --prefix=porchlight/ HEAD -o public/porchlight.tar.gz
+  git archive --format=tar.gz --prefix=porchlight/ HEAD -o /tmp/porchlight.tar.gz
   ```
 
   It fetches nothing over HTTP itself, deliberately: however the tree arrived
   — tarball, scp or clone — is not its business.
 - **Nothing here is Node any more.** The last of it went with the LAN stub on
-  2026-09-25. `package.json` and `node_modules/` are still in the tree and
-  describe a `server.js` that is not.
+  2026-09-25, and `package.json` followed on 2026-10-01.
 
 ## Keeping this file current
 

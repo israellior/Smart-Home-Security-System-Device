@@ -43,7 +43,8 @@ TEST(Pipeline, CameraWithAlsaPinsTheSystemClock) {
 }
 
 // This was the previous fix, and a test asserted it for four days while every
-// clip was broken. check-clip.py recorded it on the Pi: no better than nothing.
+// clip was broken. check-clip.py (now in the git history) recorded it on the
+// Pi: no better than nothing.
 // Kept out so nobody reads its presence as the thing that makes clips work.
 TEST(Pipeline, CameraDoesNotRelyOnTheCardDecliningTheClock) {
   EXPECT_FALSE(has(build_pipeline(camera_config(), "/tmp/x.mp4"), "provide-clock=false"));

@@ -41,8 +41,9 @@ npm run dev
 ssh israellior1@192.168.0.129
 ```
 
-The config gets left in debug states. Put it back to the real one first — this
-line is safe to run every time:
+An older config may still name the development backends, which no longer
+exist, and the daemon refuses to start on them. This puts it back to the real
+ones and is safe to run every time:
 
 ```bash
 sudo sed -i 's/"uploader": "log"/"uploader": "script"/; s/"audio_source": "test"/"audio_source": "alsa"/; s/"input": "stdin"/"input": "gpio"/; s/"led": "console"/"led": "gpio"/' /etc/porchlight/porchlightd.json

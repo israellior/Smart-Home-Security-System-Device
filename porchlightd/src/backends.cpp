@@ -4,20 +4,13 @@
 
 #include "io/alsa_chime.h"
 #include "io/bridge_server_link.h"
-#include "io/console_chime.h"
-#include "io/console_led.h"
-#include "io/fake_recorder.h"
 #ifdef PORCHLIGHT_GPIO
 #include "io/gpio_input.h"
 #include "io/gpio_led.h"
 #endif
 #include "io/gst_recorder.h"
-#include "io/logging_server_link.h"
-#include "io/logging_uploader.h"
 #include "io/script_media.h"
 #include "io/script_uploader.h"
-#include "io/stdin_input.h"
-#include "io/stub_media.h"
 
 namespace porch {
 namespace {
@@ -39,9 +32,6 @@ namespace {
 
 std::unique_ptr<Led> make_led(const Config& config, [[maybe_unused]] Reactor& reactor) {
   const std::string& name = config.backends.led;
-  if (name == "console") {
-    return std::make_unique<ConsoleLed>();
-  }
   if (name == "gpio") {
 #ifdef PORCHLIGHT_GPIO
     return std::make_unique<GpioLed>(reactor, config.gpio);
@@ -54,12 +44,6 @@ std::unique_ptr<Led> make_led(const Config& config, [[maybe_unused]] Reactor& re
 
 std::unique_ptr<Chime> make_chime(const Config& config, Reactor& reactor) {
   const std::string& name = config.backends.chime;
-  if (name == "console") {
-    return std::make_unique<ConsoleChime>();
-  }
-  if (name == "busy") {
-    return std::make_unique<BusyChime>();
-  }
   if (name == "alsa") {
     return std::make_unique<AlsaChime>(reactor, config.chime);
   }
@@ -69,9 +53,6 @@ std::unique_ptr<Chime> make_chime(const Config& config, Reactor& reactor) {
 std::unique_ptr<ClipUploader> make_uploader(const Config& config, Reactor& reactor,
                                             const EventSink& sink) {
   const std::string& name = config.backends.uploader;
-  if (name == "log") {
-    return std::make_unique<LoggingUploader>(sink);
-  }
   if (name == "script") {
     return std::make_unique<ScriptUploader>(reactor, sink, config.server, config.device_id);
   }
@@ -81,9 +62,6 @@ std::unique_ptr<ClipUploader> make_uploader(const Config& config, Reactor& react
 std::unique_ptr<MediaController> make_media(const Config& config, Reactor& reactor,
                                             const EventSink& sink) {
   const std::string& name = config.backends.media;
-  if (name == "stub") {
-    return std::make_unique<StubMedia>();
-  }
   if (name == "script") {
     return std::make_unique<ScriptMedia>(reactor, sink, config.server, config.media,
                                          config.device_id);
@@ -93,13 +71,30 @@ std::unique_ptr<MediaController> make_media(const Config& config, Reactor& react
 
 std::unique_ptr<Recorder> make_recorder(const Config& config, Reactor& reactor,
                                         const EventSink& sink) {
-  if (config.backends.recorder == "fake") {
-    return std::make_unique<FakeRecorder>(reactor, sink, config.spool.path);
-  }
   if (config.backends.recorder == "gstreamer") {
     return std::make_unique<GstRecorder>(reactor, sink, config.recorder, config.spool.path);
   }
   unknown("recorder", config.backends.recorder);
+}
+
+std::unique_ptr<ServerLink> make_server(const Config& config, Reactor& reactor,
+                                        const EventSink& sink) {
+  if (config.backends.server == "bridge") {
+    return std::make_unique<BridgeServerLink>(reactor, sink, config.server, config.device_id);
+  }
+  unknown("server", config.backends.server);
+}
+
+std::unique_ptr<InputSource> make_input(const Config& config, [[maybe_unused]] Reactor& reactor,
+                                        [[maybe_unused]] const EventSink& sink) {
+  if (config.backends.input == "gpio") {
+#ifdef PORCHLIGHT_GPIO
+    return std::make_unique<GpioInput>(reactor, sink, config.gpio);
+#else
+    not_built_in("input");
+#endif
+  }
+  unknown("input", config.backends.input);
 }
 
 }  // namespace
@@ -111,38 +106,8 @@ Hardware make_hardware(const Config& config, Reactor& reactor, const EventSink& 
   hardware.uploader = make_uploader(config, reactor, sink);
   hardware.media = make_media(config, reactor, sink);
   hardware.recorder = make_recorder(config, reactor, sink);
-
-  // The fake link is the only one whose connectivity can be driven by hand, so
-  // the typed "online" and "offline" commands reach it directly rather than
-  // through the ServerLink interface, where a real link has no such control.
-  StdinInput::LinkControl link = [](bool) {
-    log(Level::Warn, "input", "this server backend cannot be taken up or down by hand");
-  };
-
-  if (config.backends.server == "log") {
-    auto fake = std::make_unique<LoggingServerLink>(config.device_id, sink);
-    LoggingServerLink* raw = fake.get();  // owned by hardware.server below
-    link = [raw](bool online) { raw->set_online(online); };
-    hardware.server = std::move(fake);
-  } else if (config.backends.server == "bridge") {
-    hardware.server =
-        std::make_unique<BridgeServerLink>(reactor, sink, config.server, config.device_id);
-  } else {
-    unknown("server", config.backends.server);
-  }
-
-  if (config.backends.input == "stdin") {
-    hardware.input = std::make_unique<StdinInput>(reactor, sink, std::move(link));
-  } else if (config.backends.input == "gpio") {
-#ifdef PORCHLIGHT_GPIO
-    hardware.input = std::make_unique<GpioInput>(reactor, sink, config.gpio);
-#else
-    not_built_in("input");
-#endif
-  } else {
-    unknown("input", config.backends.input);
-  }
-
+  hardware.server = make_server(config, reactor, sink);
+  hardware.input = make_input(config, reactor, sink);
   return hardware;
 }
 

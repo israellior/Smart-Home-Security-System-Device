@@ -14,7 +14,8 @@ clock whatever the pipeline chose, so with both in one pipeline the video track
 comes out as ten frames spread over two hundred hours. The fix is
 pipeline.use_clock(), and there is no switch for it on a gst-launch command
 line. alsasrc provide-clock=false looked like the equivalent and is not: the
-drill in check-clip.py recorded it broken on the Pi, and this path whole.
+drill on the Pi (check-clip.py, now in the git history) recorded it broken,
+and this path whole.
 
 Exit codes: 0 the muxer saw EOS and the file is finished, 1 GStreamer reported
 an error, 2 the description did not parse.

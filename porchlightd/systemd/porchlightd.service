@@ -36,11 +36,17 @@ SupplementaryGroups=audio video gpio
 # Creates and owns /var/lib/porchlight, which holds the clip spool.
 StateDirectory=porchlight
 
+# GStreamer caches its plugin list in ~/.cache, and the porchlight user has no
+# home, so without this every clip rescanned every plugin before the camera
+# opened - about two seconds lost at the start of each one, which is exactly
+# when somebody is walking up to the door. The recorder and the call are both
+# children of the daemon and inherit it.
+Environment=GST_REGISTRY=/var/lib/porchlight/gst-registry.bin
+
 StandardOutput=journal
 StandardError=journal
 
-# The stdin input backend is for development only; systemd gives a service no
-# terminal. Set backends.input to a real one before enabling this unit.
+# Nothing reads stdin; the button and the PIR arrive through GPIO.
 StandardInput=null
 
 [Install]

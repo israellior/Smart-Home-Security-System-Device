@@ -140,8 +140,7 @@ else
   check_element webrtcechoprobe "gstreamer1.0-plugins-bad (or run with --aec off)"
 
   # No x264enc or v4l2h264enc check: the call does not encode. LiveKit's SDK
-  # does, past the appsink. The recorder still needs them - check-camera.sh is
-  # where that is tested.
+  # does, past the appsink. The recorder still needs them.
   info "no encoder is checked here: the call hands raw I420 to the SDK, which encodes"
 fi
 

@@ -3,8 +3,8 @@
   "log_level": "info",
 
   "backends": {
-    "input": "stdin",
-    "led": "console",
+    "input": "gpio",
+    "led": "gpio",
     "chime": "alsa",
     "server": "bridge",
     "uploader": "script",

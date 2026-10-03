@@ -29,8 +29,8 @@ struct Hardware {
 };
 
 // The one place a config string becomes an implementation. Adding a real
-// backend means adding a branch here and nothing else: no core change, no test
-// change, and the fake stays available to fall back to.
+// backend means adding a branch here and nothing else: no core change and no
+// test change.
 //
 // Throws ConfigError naming the key when a backend is not known to this build.
 Hardware make_hardware(const Config& config, Reactor& reactor, const EventSink& sink);

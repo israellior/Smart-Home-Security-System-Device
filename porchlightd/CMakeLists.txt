@@ -60,11 +60,9 @@ add_library(porchlight_runtime STATIC
   src/daemon.cpp
   src/io/alsa_chime.cpp
   src/io/bridge_server_link.cpp
-  src/io/fake_recorder.cpp
   src/io/gst_recorder.cpp
   src/io/script_media.cpp
   src/io/script_uploader.cpp
-  src/io/stdin_input.cpp
   src/logging.cpp
   src/random_ids.cpp
   src/reactor.cpp

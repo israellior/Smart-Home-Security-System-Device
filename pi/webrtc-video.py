@@ -751,11 +751,12 @@ class Media:
                 print("        The camera would not open. Like an ALSA hw: device it goes to")
                 print("        one process at a time, so rpicam-hello, porchlightd's recorder")
                 print("        or a second copy of this will hold it. If it was never detected")
-                print("        at all, the ribbon or config.txt is the cause: ./check-camera.sh")
+                print("        at all, the ribbon or config.txt is the cause:")
+                print("        rpicam-hello --list-cameras should name it")
                 print("        To carry on without it meanwhile:  --video test")
             if where == "mic":
                 print("        The microphone would not open. If this is 'Invalid argument' it")
-                print("        is the known WM8960 fault:  ./fix-wm8960.sh")
+                print("        is the known WM8960 driver collision - see CLAUDE.md, open problem 1")
                 print("        To carry on without the HAT meanwhile:  --audio test")
             if where == "speaker":
                 print("        The speaker would not open - something else holds the card.")

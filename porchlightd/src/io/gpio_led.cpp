@@ -64,12 +64,10 @@ GpioLed::GpioLed(Reactor& reactor, const GpioConfig& config)
 
   request_ = request_output_line(config.chip, offset_, config.led_active_low);
   if (request_ == nullptr) {
-    // Naming the escape hatch matters as much as naming the fault: a line held
-    // by something else is a wiring or a stale-process problem, and the porch
-    // should still be able to answer the door while it is sorted out.
+    // A line held by something else is a wiring or a stale-process problem,
+    // and gpioinfo names the holder.
     throw ConfigError(std::format(
-        "gpio: cannot drive line {} on {}: {}. Check `gpioinfo`, or set backends.led to "
-        "\"console\" to run without the LED",
+        "gpio: cannot drive line {} on {}: {}. Check `gpioinfo`",
         config.led_line, config.chip, std::strerror(errno)));
   }
 

@@ -1,7 +1,7 @@
 # Hardware notes
 
-Two constraints that the fake backends hide completely. Everything passes on
-WSL2 and the same code fails on the Pi, so they are written down here rather
+Two constraints that the unit tests cannot see. Everything passes on WSL2 and
+the same code fails on the Pi, so they are written down here rather
 than discovered twice.
 
 Both come from the same fact: **a device node opens once.** An ALSA `hw:` device

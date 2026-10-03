@@ -21,7 +21,7 @@ Each step adds exactly one thing that can break.
 | 0 | git init, first commit | **done** |
 | 1 | Schema doc, skeleton: CMake, loop, logging, config, signals | **done** |
 | 2 | The core and its unit tests | **done — 65 passing** |
-| 3 | Fake backends, so the whole flow runs from the keyboard | **done** |
+| 3 | Fake backends, so the whole flow runs from the keyboard | **done**, and removed 2026-10-01 |
 
 Verified on both machines: WSL2 GCC 13.3 and the Pi's GCC 14.2, Debug and
 Release, 0 warnings — 48/48 each when the Pi last ran them, **91/91 on WSL**
@@ -96,10 +96,10 @@ set that way. Four things had to go with it, all of them learned the hard way in
   204 hours**, and a player shows that as a clip hundreds of hours long. The
   fix is `pipeline.use_clock()`, as in `webrtc-video.py`, and a `gst-launch`
   command line has no such call. `alsasrc provide-clock=false` was the
-  previous attempt at an equivalent and **is not one**: `pi/check-clip.py
-  --drill` recorded it broken on the Pi on 2026-09-26, along with
-  `slave-method=none` and a 40 ms buffer, and only the pinned clock recorded a
-  clip. The `videotestsrc` path is left on its own clock, because
+  previous attempt at an equivalent and **is not one**: a drill on the Pi on
+  2026-09-26 (`pi/check-clip.py --drill`, now in the git history) recorded it
+  broken, along with `slave-method=none` and a 40 ms buffer, and only the
+  pinned clock recorded a clip. The `videotestsrc` path is left on its own clock, because
   `videotestsrc` follows whichever clock the pipeline picked and never had the
   problem.
 - **`sensor-config` pinned to 2304×1296.** Otherwise libcamera picks the
@@ -155,37 +155,22 @@ cmake --build build-asan -j4
 ./build-asan/tests/core_tests
 ```
 
-## Run it from the keyboard
+## Where it runs
 
-With the default config every backend is a fake, so the whole doorbell runs on
-a laptop with no camera, no button and no server:
+**On the Pi, and nowhere else.** Every backend is a real one — GPIO for the
+button, the PIR and the LED, ALSA for the chime, the bridge to the app server,
+GStreamer for clips, `webrtc-video.py` for the call — so a binary built without
+`-DPORCHLIGHT_GPIO=ON` refuses to start and says why. The keyboard-driven fakes
+that let it run on a laptop were removed on 2026-10-01; they are in the git
+history. The unit tests still run anywhere, because they drive the core
+directly and need no backend at all.
 
-```bash
-./build/porchlightd ./porchlightd.example.json
-```
-
-| Type | What it stands for |
-|---|---|
-| `button` | someone pressed the doorbell |
-| `motion` | the PIR fired |
-| `viewer <peer>` | someone opened the live view |
-| `call-ended [peer]` | they closed it |
-| `online` / `offline` | the server link came up or went down |
-| `quit` | SIGTERM |
-
-The last two have no real equivalent — they exist because the alert queue, the
-ageing and the backoff are otherwise unreachable without unplugging something.
-
-`porchlightd.example.json` uses the real recorder (`"recorder": "gstreamer"`)
-and needs GStreamer; `porchlightd.demo.json` uses the fake one and runs
-anywhere. To see the command the recorder will run without running it:
+To see the command the recorder will run without running it, which works on
+any build:
 
 ```bash
 ./build/porchlightd --print-pipeline ./porchlightd.example.json
 ```
-
-Worth trying: type `motion`, then `button` two seconds later, and watch one
-event get upgraded to a ring — same id, second alert, no second clip.
 
 ## Talking to the app server
 
@@ -257,13 +242,8 @@ sudo mkdir -p /usr/local/lib/porchlight /etc/porchlight
 sudo install -m 0755 ../pi/server-bridge.py ../pi/upload-clip.py /usr/local/lib/porchlight/
 
 sudo cp porchlightd.example.json /etc/porchlight/porchlightd.json
-sudo nano /etc/porchlight/porchlightd.json      # set server.base_url, and
-                                                # backends.input/led to "gpio"
+sudo nano /etc/porchlight/porchlightd.json      # set server.base_url
 ```
-
-The example config still ships `input: "stdin"` and `led: "console"`, because
-they are what a binary built without `-DPORCHLIGHT_GPIO=ON` can run. The pin
-numbers in its `gpio` block are the real ones.
 
 **The credential is typed onto the device and lives nowhere else.** It is not
 in this repository, it is not fetched over HTTP, and the server keeps only a
@@ -302,15 +282,12 @@ else is unreadable and the daemon fails with a permission error rather than an
 authentication one. `chown porchlight` it when the unit is what starts the
 daemon, and `chown` it to yourself while you are running it by hand.
 
-Second, the unit sets `StandardInput=null`, so a unit left on
-`backends.input: "stdin"` would **start, connect, and never see an event** —
-nothing can type at it. Set `input` and `led` to `"gpio"` before enabling it,
-and build the binary with `-DPORCHLIGHT_GPIO=ON` or it will refuse to start
-and say which. The unit already grants `SupplementaryGroups=audio video gpio`,
-which is what lets `porchlight` open `/dev/gpiochip0`.
+Second, the binary must be built with `-DPORCHLIGHT_GPIO=ON` or it will
+refuse to start and say which. The unit already grants
+`SupplementaryGroups=audio video gpio`, which is what lets `porchlight` open
+`/dev/gpiochip0`.
 
-To run it in a terminal instead — which is still how the fake backends are
-driven:
+To run it in a terminal instead, to read the log as it happens:
 
 ```bash
 /usr/local/bin/porchlightd /etc/porchlight/porchlightd.json
@@ -377,9 +354,8 @@ mid-upload.
 
 ## The chime
 
-`backends.chime` picks one of three: `console` logs `ding`, `busy` always
-refuses (standing in for a card held by a live call), and `alsa` plays a file
-through the speaker with `aplay`.
+`backends.chime` is `alsa`, which plays a file through the speaker with
+`aplay`.
 
 It is best effort by design. A missing file, a missing `aplay` and a busy
 device are each one warning and nothing more — the alert goes out over a
@@ -413,8 +389,7 @@ moment, the chime ends up **inside** every ring clip.
 
 Everything sits behind an interface, and one file chooses the implementation:
 [`src/backends.cpp`](src/backends.cpp). Adding a real backend is a branch there
-and a line of JSON. **No core change**, and the fake stays available to fall
-back to when something misbehaves at 11pm.
+and a line of JSON. **No core change.**
 
 | Part | Config change | Files |
 |---|---|---|
@@ -525,7 +500,7 @@ mid-call would otherwise leave the porch lit for good.
 
 ```
 src/core/        the rules. No I/O, ever. What the tests exercise.
-src/io/          one interface per thing in the world, plus today's fakes.
+src/io/          one interface per thing in the world, and its real backend.
 src/             the machinery: reactor, config, logging, daemon wiring.
 tests/           91 unit tests: no hardware, no GStreamer, no GPIO, no Pi.
 docs/            decisions that outlive the code that implements them.
@@ -538,8 +513,8 @@ Two documents are worth reading before changing anything:
   dedupe that makes the ring upgrade expressible, and what `viewer-requested`
   does now that there is no SDP on the socket and no second socket to collide
   with.
-- [docs/hardware-notes.md](docs/hardware-notes.md) — the two constraints the
-  fakes hide, which will only ever fail on the Pi.
+- [docs/hardware-notes.md](docs/hardware-notes.md) — two constraints the
+  unit tests cannot see, which will only ever fail on the Pi.
 
 ## Design notes
 

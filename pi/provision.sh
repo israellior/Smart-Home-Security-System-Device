@@ -11,7 +11,7 @@
 #   ./provision.sh --url https://porchlight.example --device-id porch-1 --apply
 #   ./provision.sh --url https://porchlight.example --device-id porch-1 --verify
 #
-# **The default is a survey and changes nothing**, like fix-wm8960.sh: it
+# **The default is a survey and changes nothing**: it
 # reports what is already right, what it would do, and what it cannot do for
 # you. --apply carries it out. --verify runs only the three proofs at the end,
 # which is what to run when a device that used to work has stopped.

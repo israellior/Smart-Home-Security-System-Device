@@ -38,8 +38,8 @@ needs to accept an incoming connection and no TURN relay is required.
 ## What already exists
 
 **`porchlightd`** — a C++20 daemon on a Pi 4, verified on hardware. It owns
-every decision about when to alert, record, chime and call. It currently fakes
-the server link and the uploader, which is the gap you are filling.
+every decision about when to alert, record, chime and call. It used to fake
+the server link and the uploader; both are real now, and talk to your server.
 
 What it already does, and you do not need to reimplement:
 
