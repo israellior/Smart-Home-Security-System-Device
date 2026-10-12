@@ -68,6 +68,7 @@ the viewer is the app rather than a page served from here.
 | — | Provisioning, and a link that comes and goes | **provisioning done 2026-09-26** (`--image --apply`, `--verify` 3 of 3). Reconnecting never drilled on the Pi |
 | — | A device that ships: identity at the factory, wi-fi from a phone | **done 2026-09-26** — porch-2 from a birth certificate, set up from a phone, claimed in the app |
 | — | Clips of the right length | **fixed 2026-09-26** — every clip claimed 204 hours; see "The clock" |
+| — | An image of our own, built with Buildroot | **booted 2026-10-12** on branch `product-image` — a login on HDMI, nothing of the doorbell in it yet. See `image/buildroot/README.md` |
 
 ### Read this first: what has run on hardware, and what has not
 
@@ -965,6 +966,12 @@ pi/provision.sh         A fresh Pi to a connected doorbell, in one pass: package
                         acts, --verify runs only the proofs. Never takes the
                         credential as an argument. --image is the factory
                         build: enable the boot units, expect no credential.
+image/buildroot/        A BR2_EXTERNAL tree for Buildroot 2026.02.3: our Pi 4
+                        defconfig and board files, so the SD card image builds
+                        from this repo. Its README is the build host setup -
+                        WSL, a clean PATH, and a symlink because this repo's
+                        path has spaces. The first step from provision.sh
+                        towards a factory image.
 pi/check-livekit.sh     Read-only check of the call: the venv and the SDK, the GStreamer
                         elements, the credential and what the two tokens grant,
                         and whether anything else holds the camera or the card.
