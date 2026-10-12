@@ -68,7 +68,7 @@ the viewer is the app rather than a page served from here.
 | — | Provisioning, and a link that comes and goes | **provisioning done 2026-09-26** (`--image --apply`, `--verify` 3 of 3). Reconnecting never drilled on the Pi |
 | — | A device that ships: identity at the factory, wi-fi from a phone | **done 2026-09-26** — porch-2 from a birth certificate, set up from a phone, claimed in the app |
 | — | Clips of the right length | **fixed 2026-09-26** — every clip claimed 204 hours; see "The clock" |
-| — | An image of our own, built with Buildroot | **booted 2026-10-12** on branch `product-image` — a login on HDMI, nothing of the doorbell in it yet. See `image/buildroot/README.md` |
+| — | An image of our own, built with Buildroot | **booted 2026-10-12** on branch `product-image` — a login on HDMI. `porchlightd` is now a Buildroot package and builds into it (GCC 15, no warnings), not yet run there. See `image/buildroot/README.md` |
 
 ### Read this first: what has run on hardware, and what has not
 

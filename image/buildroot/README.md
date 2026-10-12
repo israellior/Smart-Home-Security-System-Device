@@ -2,20 +2,35 @@
 
 A `BR2_EXTERNAL` tree: everything that makes the image *ours* lives here, and
 Buildroot itself stays an untouched download. It builds a Raspberry Pi 4 SD
-card image that boots to a login prompt on HDMI. Nothing of the doorbell is in
-it yet: no `porchlightd`, no WM8960 overlay, no camera, no network beyond DHCP
-on Ethernet.
+card image that boots to a login prompt on HDMI, with `porchlightd` in
+`/usr/bin`. Nothing else of the doorbell is in it yet: no config file, none of
+the Python halves, no WM8960 overlay, no camera, no network beyond DHCP on
+Ethernet.
 
-**Status, 2026-10-12:** this config, before it was moved into this tree,
-booted on a Pi 4. The image built from this tree was checked on the build host
-(both board scripts ran from here; `/etc/shadow` holds the hash) but has not
-been flashed.
+**Status, 2026-10-12:** the first config, before it was moved into this tree,
+booted on a Pi 4. The image with `porchlightd` in it builds, the daemon
+compiles with no warnings under GCC 15, and the binary is in the ext4 image -
+all checked on the build host, not yet on the Pi.
 
 ## Buildroot version: 2026.02.3
 
 Pinned on purpose. `.02` releases are Buildroot's LTS and get fixes for a
 year; a different release would build a different image from the same
 defconfig. Change it deliberately, in its own commit, and rebuild from clean.
+
+## The toolchain: Bootlin bleeding-edge, for its kernel headers
+
+Bootlin's ready-made aarch64 glibc toolchain, the **bleeding-edge** variant:
+GCC 15 and kernel headers 5.15. Buildroot's own Pi 4 defconfig picks the
+*stable* variant, whose headers are 5.4, and that cannot build libgpiod 2:
+the GPIO v2 ioctls it uses arrived in Linux 5.10, and a program can only use
+what the toolchain's copy of the kernel headers declares, whatever kernel the
+Pi actually runs. `porchlightd` was hidden from menuconfig until this changed.
+
+Bleeding-edge is the first entry in Buildroot's list, so it is the default,
+and the defconfig says nothing about the toolchain at all. That is only safe
+because the Buildroot version is pinned: on an upgrade, check that the default
+has not moved.
 
 ## The build host
 
@@ -85,6 +100,10 @@ brmake rpi-firmware-rebuild all
 After removing a package, or changing the CPU, toolchain or C library, only
 `brmake clean && brmake` is trustworthy. A release build is always from clean.
 
+After editing `porchlightd`'s source, `brmake porchlightd-rebuild all`. Its
+source is this repository rather than a download, so the rebuild copies the
+tree again with rsync and needs no version bump.
+
 ## The root password
 
 Stored as a SHA-512 crypt hash, never in clear text, because this file is on
@@ -104,11 +123,17 @@ shipped device should have no root password at all, only SSH keys.
 ```
 external.desc           The tree's name, PORCHLIGHT, which gives the defconfig
                         $(BR2_EXTERNAL_PORCHLIGHT_PATH) to refer to it with.
-Config.in               Our packages' menu entries. None yet.
-external.mk             Our packages' recipes, every package/*/*.mk. None yet.
+Config.in               Our packages' menu entries, under "External options".
+external.mk             Our packages' recipes, every package/*/*.mk.
 configs/porchlight_rpi4_defconfig
                         Buildroot's raspberrypi4_64 with the board files below,
-                        hostname porchlight and the root password hash.
+                        the bleeding-edge toolchain, porchlightd, hostname
+                        porchlight and the root password hash.
+package/porchlightd/    The daemon, built from ../../porchlightd in this repo.
+                        Selects libgpiod2, and json-for-modern-cpp so that
+                        CMake finds nlohmann/json rather than fetching it from
+                        GitHub mid-build. Installs /usr/bin/porchlightd itself,
+                        because CMakeLists.txt has no install() rules.
 board/porchlight/rpi4/  Still unchanged copies of Buildroot's Pi 4 files.
   config.txt            Read by the GPU firmware: kernel, 64-bit, overlays.
   cmdline.txt           The kernel command line: root=/dev/mmcblk0p2.

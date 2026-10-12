@@ -1,0 +1,29 @@
+config BR2_PACKAGE_PORCHLIGHTD
+	bool "porchlightd"
+	depends on BR2_INSTALL_LIBSTDCPP
+	# C++20. Built and tested with GCC 13 and 14 only, so nothing older is
+	# claimed to work.
+	depends on BR2_TOOLCHAIN_GCC_AT_LEAST_13
+	# Repeated from libgpiod2, because select does not check them for us.
+	depends on BR2_TOOLCHAIN_HEADERS_AT_LEAST_5_10
+	depends on !BR2_PACKAGE_LIBGPIOD
+	select BR2_PACKAGE_LIBGPIOD2
+	# Header-only, but it must be found: otherwise CMake's FetchContent
+	# downloads it from GitHub mid-build, past every hash check.
+	select BR2_PACKAGE_JSON_FOR_MODERN_CPP
+	help
+	  The Porchlight doorbell daemon: decides when to chime, alert,
+	  record and start a call, and drives the button, the PIR and
+	  the LED through libgpiod 2.
+
+	  The programs it starts (server-bridge.py, record-clip.py,
+	  aplay, ...) are not dependencies of this package and must be
+	  added to the image separately.
+
+comment "porchlightd needs a toolchain w/ C++, gcc >= 13, headers >= 5.10"
+	depends on !BR2_INSTALL_LIBSTDCPP || \
+		!BR2_TOOLCHAIN_GCC_AT_LEAST_13 || \
+		!BR2_TOOLCHAIN_HEADERS_AT_LEAST_5_10
+
+comment "porchlightd is incompatible with libgpiod (1.x)"
+	depends on BR2_PACKAGE_LIBGPIOD
