@@ -1,8 +1,11 @@
 #include "io/gst_recorder.h"
 
+#include <fcntl.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <nlohmann/json.hpp>
 
 #include <cerrno>
 #include <cstring>
@@ -34,7 +37,7 @@ constexpr std::uintmax_t kMinPlausibleBytes = 1024;
 constexpr const char* kFullFrameSensorMode =
     "sensor-config=\"sensor/config,width=2304,height=1296,depth=10\"";
 
-void add_video(std::vector<std::string>& args, const RecorderConfig& config) {
+void add_video(std::vector<std::string>& args, const RecorderConfig& config, bool detect) {
   const bool camera = config.video_source == "libcamera";
   if (camera) {
     args.push_back("libcamerasrc");
@@ -59,6 +62,14 @@ void add_video(std::vector<std::string>& args, const RecorderConfig& config) {
                              camera ? "format=I420," : "", config.width, config.height,
                              config.fps));
   args.push_back("!");
+  if (detect) {
+    // The detector cannot open the camera itself - only one process can hold
+    // it - so it gets a copy of these frames instead. Its branch is added in
+    // add_detector, after the muxer's branches are complete.
+    args.push_back("tee");
+    args.push_back("name=t");
+    args.push_back("!");
+  }
   // Gives the source a thread of its own, so encoding never stalls capture.
   args.push_back("queue");
   args.push_back("!");
@@ -138,14 +149,61 @@ void add_audio(std::vector<std::string>& args, const RecorderConfig& config) {
   args.push_back("mux.");
 }
 
+// The second branch of the tee. Everything about it serves one rule: the
+// detector must never be able to slow the clip down. A Pi that is hot, or a
+// model that is slower than expected, should cost detected frames and never a
+// recorded one - so the queue throws the oldest frame away rather than
+// blocking the tee, and the appsink keeps only the newest.
+void add_detector(std::vector<std::string>& args, const DetectConfig& detect) {
+  args.push_back("t.");
+  args.push_back("!");
+  args.push_back("queue");
+  args.push_back("leaky=downstream");
+  args.push_back("max-size-buffers=1");
+  args.push_back("max-size-bytes=0");
+  args.push_back("max-size-time=0");
+  args.push_back("!");
+  // Before the scaling, so the frames that will be dropped anyway are never
+  // converted.
+  args.push_back("videorate");
+  args.push_back("drop-only=true");
+  args.push_back(std::format("max-rate={}", detect.fps));
+  args.push_back("!");
+  // Scaled and converted here, in C, rather than in Python. Squashed rather
+  // than letterboxed: a person a metre from the door survives it.
+  args.push_back("videoscale");
+  args.push_back("!");
+  args.push_back("videoconvert");
+  args.push_back("!");
+  args.push_back(std::format("video/x-raw,format=RGB,width={0},height={0}", detect.input_size));
+  args.push_back("!");
+  args.push_back("appsink");
+  args.push_back("name=detect");
+  args.push_back("drop=true");
+  args.push_back("max-buffers=1");
+  // As fast as frames come. Syncing would hold each one until its timestamp,
+  // which buys nothing for a frame that is only going to be looked at.
+  args.push_back("sync=false");
+}
+
 }  // namespace
 
 std::vector<std::string> build_pipeline(const RecorderConfig& config,
-                                        const std::filesystem::path& output) {
+                                        const std::filesystem::path& output,
+                                        std::chrono::seconds detect_for) {
+  const bool detect = detect_for > std::chrono::seconds::zero();
+
   // record-clip.py is gst-launch-1.0 -e with one addition: it turns SIGINT into
   // EOS, which flushes the muxer and leaves a file that will play, and it can
   // pin the pipeline clock, which gst-launch cannot.
-  std::vector<std::string> args{config.script.string()};
+  //
+  // Run by its shebang normally, and by the venv's interpreter when it
+  // detects, because the inference runtime is a pip package.
+  std::vector<std::string> args;
+  if (detect) {
+    args.push_back(config.detect.python.string());
+  }
+  args.push_back(config.script.string());
 
   // libcamerasrc stamps frames against the system monotonic clock whatever the
   // pipeline chose, and alsasrc offers the card's clock, so with both present
@@ -154,6 +212,17 @@ std::vector<std::string> build_pipeline(const RecorderConfig& config,
   // so the videotestsrc + alsasrc path keeps the clock it was verified with.
   if (config.video_source == "libcamera") {
     args.push_back("--system-clock");
+  }
+  if (detect) {
+    const DetectConfig& d = config.detect;
+    args.insert(args.end(), {
+        "--detect-model", d.model.string(),
+        "--detect-size", std::to_string(d.input_size),
+        "--detect-window", std::to_string(detect_for.count()),
+        "--detect-min-score", std::to_string(d.min_score_percent),
+        "--detect-min-luma", std::to_string(d.min_luma),
+        "--detect-min-frames", std::to_string(d.min_frames),
+    });
   }
   args.push_back("--");
 
@@ -166,8 +235,11 @@ std::vector<std::string> build_pipeline(const RecorderConfig& config,
   args.push_back("filesink");
   args.push_back(std::format("location=\"{}\"", output.string()));
 
-  add_video(args, config);
+  add_video(args, config, detect);
   add_audio(args, config);
+  if (detect) {
+    add_detector(args, config.detect);
+  }
   return args;
 }
 
@@ -181,6 +253,24 @@ GstRecorder::GstRecorder(Reactor& reactor, EventSink sink, RecorderConfig config
     timer_.drain();
     on_timer();
   });
+
+  // Not fatal: without a model every motion comes back unknown, and unknown
+  // alerts, so the doorbell behaves exactly as it did before detection. But
+  // that looks like a detector that never finds anybody, so say why once.
+  if (config_.detect.enabled) {
+    std::error_code ec;
+    if (!std::filesystem::exists(config_.detect.model, ec)) {
+      log(Level::Warn, "rec",
+          "detection is on but there is no model at {} - every motion will alert unjudged",
+          config_.detect.model.string());
+    }
+    if (!std::filesystem::exists(config_.detect.python, ec)) {
+      log(Level::Warn, "rec",
+          "detection is on but there is no interpreter at {} - motion recordings will fail "
+          "to start, and alert unjudged",
+          config_.detect.python.string());
+    }
+  }
 
   // Said once at startup rather than per clip. Neither is fatal and neither is
   // this code's business to override - a wrong aspect still records, and a
@@ -211,7 +301,8 @@ GstRecorder::~GstRecorder() {
   reactor_.unwatch(timer_.fd());
 }
 
-void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds) {
+void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds,
+                        std::chrono::seconds detect_for) {
   if (phase_ != Phase::Idle) {
     // The core never does this. If it ever did, the answer must still be
     // exactly one RecordingFinished per start, or it would wait forever.
@@ -232,11 +323,28 @@ void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds) {
   output_ = spool_ / std::format("{}.mp4", event_id);
   started_at_ = Clock::now();
   killed_ = false;
+  verdict_sent_ = false;
+  detector_input_.clear();
 
-  const pid_t pid = spawn_child(build_pipeline(config_, output_));
+  const std::vector<std::string> args = build_pipeline(config_, output_, detect_for);
+  pid_t pid = -1;
+  if (detect_for > std::chrono::seconds::zero()) {
+    PipedChild child = spawn_child_with_pipes(args);
+    pid = child.pid;
+    if (pid >= 0) {
+      // Nothing is ever said to the recorder on stdin; closing our end says so.
+      child.to_child.reset();
+      detector_ = std::move(child.from_child);
+      // Non-blocking, because it is drained once more after the child exits,
+      // and anything the child spawned may still hold the write end open.
+      ::fcntl(detector_.get(), F_SETFL, O_NONBLOCK);
+      reactor_.watch(detector_.get(), [this] { read_detector(); });
+    }
+  } else {
+    pid = spawn_child(args);
+  }
   if (pid < 0) {
-    log(Level::Error, "rec", "cannot run {}: {}", config_.script.string(),
-        std::strerror(errno));
+    log(Level::Error, "rec", "cannot run {}: {}", args.front(), std::strerror(errno));
     report(false);
     return;
   }
@@ -248,7 +356,7 @@ void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds) {
     ::kill(pid_, SIGKILL);
     int status = 0;
     ::waitpid(pid_, &status, 0);
-    pid_ = -1;
+    release_child();
     report(false);
     return;
   }
@@ -258,8 +366,13 @@ void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds) {
   timer_.arm_in(seconds);
   phase_ = Phase::Recording;
 
-  log(Level::Info, "rec", "recording id={} for {}s to {}", event_id, seconds.count(),
-      output_.string());
+  if (detect_for > std::chrono::seconds::zero()) {
+    log(Level::Info, "rec", "recording id={} for {}s to {}, looking for a person for {}s",
+        event_id, seconds.count(), output_.string(), detect_for.count());
+  } else {
+    log(Level::Info, "rec", "recording id={} for {}s to {}", event_id, seconds.count(),
+        output_.string());
+  }
 }
 
 void GstRecorder::stop() { begin_stop(); }
@@ -293,6 +406,10 @@ void GstRecorder::on_timer() {
 void GstRecorder::on_child_exit() {
   int status = 0;
   ::waitpid(pid_, &status, 0);  // already exited, so this does not block
+  // The pidfd and the pipe are two descriptors and epoll may report either
+  // first. A verdict still sitting in the pipe must reach the core before the
+  // RecordingFinished does, or the core reads the silence as Unknown.
+  read_detector();
   release_child();
 
   const bool clean = !killed_ && WIFEXITED(status) && WEXITSTATUS(status) == 0;
@@ -308,7 +425,75 @@ void GstRecorder::release_child() {
     reactor_.unwatch(pidfd_.get());
     pidfd_.reset();
   }
+  if (detector_.valid()) {
+    reactor_.unwatch(detector_.get());
+    detector_.reset();
+  }
+  detector_input_.clear();
   pid_ = -1;
+}
+
+void GstRecorder::read_detector() {
+  if (!detector_.valid()) {
+    return;
+  }
+  char chunk[512];
+  for (;;) {
+    const ssize_t got = ::read(detector_.get(), chunk, sizeof(chunk));
+    if (got > 0) {
+      detector_input_.append(chunk, static_cast<std::size_t>(got));
+      continue;
+    }
+    if (got < 0 && errno == EINTR) {
+      continue;
+    }
+    if (got == 0 || errno != EAGAIN) {
+      // The child closed its stdout - it is exiting. The pidfd says so too,
+      // and that is where the cleanup happens; this only stops listening.
+      reactor_.unwatch(detector_.get());
+      detector_.reset();
+    }
+    break;
+  }
+
+  std::size_t newline = detector_input_.find('\n');
+  while (newline != std::string::npos) {
+    const std::string line = detector_input_.substr(0, newline);
+    detector_input_.erase(0, newline + 1);
+    handle_detector_line(line);
+    newline = detector_input_.find('\n');
+  }
+}
+
+void GstRecorder::handle_detector_line(const std::string& line) {
+  const nlohmann::json message = nlohmann::json::parse(line, nullptr, false);
+  if (!message.is_object() || !message.contains("verdict") || !message["verdict"].is_string()) {
+    log(Level::Warn, "rec", "detector said something unexpected: {}", line);
+    return;
+  }
+
+  const std::string said = message["verdict"].get<std::string>();
+  Verdict verdict = Verdict::Unknown;
+  if (said == "person") {
+    verdict = Verdict::Person;
+  } else if (said == "no-person") {
+    verdict = Verdict::NoPerson;
+  } else if (said != "unknown") {
+    // A word this side does not know is not permission to stay silent.
+    log(Level::Warn, "rec", "detector verdict '{}' is not one we know; taking it as unknown",
+        said);
+  }
+
+  // One per recording, which is the promise the core relies on. A second one
+  // means the script is broken; the first answer stands.
+  if (verdict_sent_) {
+    log(Level::Warn, "rec", "a second verdict for {} ignored: {}", event_id_, line);
+    return;
+  }
+  verdict_sent_ = true;
+  log(Level::Info, "rec", "detector: {} for {} ({})", to_string(verdict), event_id_,
+      message.value("why", std::string{"no reason given"}));
+  sink_(DetectionResult{event_id_, verdict});
 }
 
 void GstRecorder::report(bool clean_exit) {

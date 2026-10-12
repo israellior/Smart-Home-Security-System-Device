@@ -22,7 +22,11 @@ class Recorder {
  public:
   virtual ~Recorder() = default;
 
-  virtual void start(const EventId& event_id, std::chrono::seconds seconds) = 0;
+  // detect_for above zero also runs the person detector on the same frames,
+  // which answers with at most one DetectionResult, always before the
+  // RecordingFinished. Zero means no detector and no DetectionResult.
+  virtual void start(const EventId& event_id, std::chrono::seconds seconds,
+                     std::chrono::seconds detect_for) = 0;
   virtual void stop() = 0;
 
   // Shutdown waits on this, so the clip is not left unplayable.

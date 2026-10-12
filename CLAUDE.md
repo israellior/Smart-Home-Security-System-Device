@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Working notes for this project. Read this first; update it at the end of any session
-that changes something here. Last updated 2026-10-01.
+that changes something here. Last updated 2026-10-03.
 
 **Also read [DESIGN.md](DESIGN.md)** and
 [docs/server-brief.md](docs/server-brief.md). This file describes the present.
@@ -68,6 +68,7 @@ the viewer is the app rather than a page served from here.
 | — | Provisioning, and a link that comes and goes | **provisioning done 2026-09-26** (`--image --apply`, `--verify` 3 of 3). Reconnecting never drilled on the Pi |
 | — | A device that ships: identity at the factory, wi-fi from a phone | **done 2026-09-26** — porch-2 from a birth certificate, set up from a phone, claimed in the app |
 | — | Clips of the right length | **fixed 2026-09-26** — every clip claimed 204 hours; see "The clock" |
+| — | Person detection gates the motion alert | **written 2026-10-03 on branch `person-detection`, off by default, never run on the Pi** — see "Person detection" |
 
 ### Read this first: what has run on hardware, and what has not
 
@@ -327,6 +328,73 @@ is not live and runs on the card's own clock, so nothing was ever late.
 **The level meter proves the audio reached the sink, not that the sink played
 it.** Same lesson as the pads in Step 5: count at the point of handover, and
 know which side of the handover the counter is on.
+
+### Person detection
+
+**Written 2026-10-03, unit-tested in WSL, never run on a Pi.** `detect.enabled`
+is `false` in the example config, and off means motion behaves exactly as it
+did before.
+
+The PIR only wakes the camera. The recording starts at once, as before, but
+the motion alert is **held** until the camera has looked. The button is not
+affected: a ring is proof of a person, so it never waits and is never judged.
+
+- **The detector lives inside `record-clip.py`**, on a second branch of a
+  `tee` after the camera caps: leaky queue → `videorate` (5 fps) → scale and
+  convert to square RGB → `appsink name=detect drop=true max-buffers=1`. Only
+  one process can hold the camera, so it cannot open its own, and the branch
+  can only ever lose *detected* frames, never recorded ones.
+- **Three verdicts, not two.** `person` releases the alert. `no-person` stops
+  the recording, deletes the clip, and replaces the 25 s motion cooldown with
+  a 5 s one, so a visitor arriving after the cat is still looked for.
+  `unknown` (no runtime, no model, too dark, too slow, stopped first) **alerts
+  exactly like `person`**. Only a `no-person` earned on at least `min_frames`
+  bright frames can silence anything.
+- **The core keeps its own deadline**: window + grace (8 + 3 s) after the PIR,
+  then it alerts anyway. A recording that ends without a verdict alerts too.
+  The alert is always stamped with the PIR's time.
+- **Mid-process events:** a press while looking becomes a ring at once, and the
+  motion alert is never sent. A press after `no-person`, while that recording is
+  still flushing, rescues the clip as a ring. A viewer while looking cuts the
+  recording short, so the verdict is `unknown` and it alerts. Motion during a
+  call alerts unjudged, because the call holds the camera.
+- **The verdict travels as one JSON line on the recorder's stdout**, which is a
+  pipe only when detecting. It is read again after the child exits, because
+  epoll can report the pidfd before the pipe, and the verdict must reach the
+  core before `RecordingFinished`.
+- **When detecting, the recorder runs under the venv's Python**, because the
+  inference runtime is a pip package. Otherwise it still runs from its shebang.
+
+**Defaults chosen without the user confirming them** (2026-10-03): fail open
+on `unknown`; `no-person` clips are deleted rather than kept for tuning; no
+change to the alert protocol, so the app cannot yet tell "person" from
+"unjudged motion". At night the camera has no infrared, every frame is under
+`min_luma`, and every motion alerts unjudged — safe, but no filtering after
+dark.
+
+**Not known yet, and only the Pi can say:** which runtime installs on Debian
+13's Python 3.13 (`ai-edge-litert` is tried first, then `tflite_runtime`, then
+`tensorflow`), how long inference takes *while x264 is encoding*, and how hot
+the Pi gets after a run of clips (`vcgencmd measure_temp`, `get_throttled`). The
+model expected is a TFLite SSD with `TFLite_Detection_PostProcess` outputs —
+COCO SSD MobileNet v1 quantised (`detect.tflite`, 300×300, Apache 2.0) is the
+one the defaults are sized for. **Not YOLO from Ultralytics: it is AGPL**,
+which matters for a device that ships.
+
+To try it on the Pi, by hand (`provision.sh` does not install any of this yet):
+
+```bash
+sudo apt install -y python3-numpy
+sudo /opt/porchlight/venv/bin/pip install ai-edge-litert   # unverified on 3.13
+# the model: detect.tflite from coco_ssd_mobilenet_v1_1.0_quant_2018_06_29.zip
+sudo install -m 0644 detect.tflite /usr/local/share/porchlight/person.tflite
+# then "detect": { "enabled": true } in porchlightd.json and restart the unit
+```
+
+A healthy run reads `rec: recording id=… looking for a person for 8s`, then
+`record-clip: detect: model loaded in … ms`, then the two-second
+`detect: N frames in, M judged, D dark, X ms each` counters, and one
+`rec: detector: person|no-person|unknown for … (why)`.
 
 ### Echo cancellation
 
@@ -940,7 +1008,10 @@ pi/upload-clip.py       One clip, in three steps - signed url, PUT, confirm. Jud
                         by its exit code alone; only the confirm earns a 0.
 pi/record-clip.py       The recorder, as porchlightd's child: gst-launch-1.0 -e
                         plus the clock pin gst-launch cannot make. SIGINT is
-                        EOS, and the exit code is the verdict.
+                        EOS, and the exit code is the verdict. With
+                        --detect-model it is also the person detector: a thread
+                        fed from the pipeline's appsink, one JSON verdict on
+                        stdout, any failure in it reported as "unknown".
 pi/porchlight-firstboot.py
                         One image becomes one doorbell. Reads the birth
                         certificate off the FAT boot partition, installs the

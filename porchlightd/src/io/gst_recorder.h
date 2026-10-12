@@ -19,8 +19,10 @@ namespace porch {
 
 // Turning configuration into a command line is the one part of this that can
 // be checked without a camera or a sound card, so it is reachable on its own.
+// detect_for above zero adds the detector's branch and its switches.
 std::vector<std::string> build_pipeline(const RecorderConfig& config,
-                                        const std::filesystem::path& output);
+                                        const std::filesystem::path& output,
+                                        std::chrono::seconds detect_for = std::chrono::seconds{0});
 
 // pi/record-clip.py - gst-launch-1.0 -e with the clock pinned - as a child
 // process, watched through a pidfd.
@@ -34,7 +36,8 @@ class GstRecorder : public Recorder {
               std::filesystem::path spool);
   ~GstRecorder() override;
 
-  void start(const EventId& event_id, std::chrono::seconds seconds) override;
+  void start(const EventId& event_id, std::chrono::seconds seconds,
+             std::chrono::seconds detect_for) override;
   void stop() override;
   bool busy() const override { return phase_ != Phase::Idle; }
 
@@ -49,6 +52,8 @@ class GstRecorder : public Recorder {
   void begin_stop();
   void report(bool clean_exit);
   void release_child();
+  void read_detector();
+  void handle_detector_line(const std::string& line);
 
   Reactor& reactor_;
   EventSink sink_;
@@ -63,6 +68,12 @@ class GstRecorder : public Recorder {
   pid_t pid_ = -1;
   UniqueFd pidfd_;
   bool killed_ = false;
+
+  // The child's stdout, when it detects: one JSON line carrying the verdict,
+  // and nothing else. Its stderr stays the journal's.
+  UniqueFd detector_;
+  std::string detector_input_;
+  bool verdict_sent_ = false;
 };
 
 }  // namespace porch

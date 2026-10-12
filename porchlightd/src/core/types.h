@@ -26,6 +26,15 @@ enum class LedPattern { Ring, Live, Recording, Fault, Offline, Idle, Off };
 // failure is the link, and must be.
 enum class AlertOutcome { Delivered, Rejected, Failed };
 
+// What the camera made of a motion trigger. Three answers, not two, and the
+// third is the one that matters: Unknown means the detector could not judge -
+// it broke, it was too slow, the picture was too dark, the recording ended
+// first - and it is treated exactly like Person. Only a NoPerson that was
+// earned by looking at enough bright frames is allowed to silence an alert,
+// because a doorbell that quietly stops alerting is worse than one that alerts
+// for the cat.
+enum class Verdict { Person, NoPerson, Unknown };
+
 inline const char* to_string(Kind kind) {
   switch (kind) {
     case Kind::Motion: return "motion";
@@ -56,9 +65,19 @@ inline const char* to_string(AlertOutcome outcome) {
   return "?";
 }
 
+inline const char* to_string(Verdict verdict) {
+  switch (verdict) {
+    case Verdict::Person: return "person";
+    case Verdict::NoPerson: return "no-person";
+    case Verdict::Unknown: return "unknown";
+  }
+  return "?";
+}
+
 // So a failing test prints "ring" rather than an integer.
 inline std::ostream& operator<<(std::ostream& out, Kind kind) { return out << to_string(kind); }
 inline std::ostream& operator<<(std::ostream& out, LedPattern p) { return out << to_string(p); }
 inline std::ostream& operator<<(std::ostream& out, AlertOutcome o) { return out << to_string(o); }
+inline std::ostream& operator<<(std::ostream& out, Verdict v) { return out << to_string(v); }
 
 }  // namespace porch
