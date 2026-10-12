@@ -1,0 +1,4 @@
+# Menu entries for our own packages, shown under "External options" in
+# menuconfig. One line per package, once it exists:
+#
+# source "$BR2_EXTERNAL_PORCHLIGHT_PATH/package/porchlightd/Config.in"
