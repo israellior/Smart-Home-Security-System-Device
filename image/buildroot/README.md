@@ -2,15 +2,43 @@
 
 A `BR2_EXTERNAL` tree: everything that makes the image *ours* lives here, and
 Buildroot itself stays an untouched download. It builds a Raspberry Pi 4 SD
-card image that boots to a login prompt on HDMI, with `porchlightd` in
-`/usr/bin`. Nothing else of the doorbell is in it yet: no config file, none of
-the Python halves, no WM8960 overlay, no camera, no network beyond DHCP on
-Ethernet.
+card image running systemd and NetworkManager - the two things the doorbell's
+own programs assume, because they were written for Raspberry Pi OS - with Wi-Fi,
+an SSH server, and `porchlightd` in `/usr/bin`. Nothing else of the doorbell is
+in it yet: no config file, none of the Python halves, no `porchlight` user, no
+WM8960 overlay, no camera.
 
-**Status, 2026-10-12:** the first config, before it was moved into this tree,
-booted on a Pi 4. The image with `porchlightd` in it builds, the daemon
-compiles with no warnings under GCC 15, and the binary is in the ext4 image -
-all checked on the build host, not yet on the Pi.
+**Status, 2026-10-12:** runs on the Pi. It joined Wi-Fi through `nmcli`, took
+an SSH login with the key below, and started with no failed units.
+`porchlightd --help` runs, which proves the loader finds `libgpiod.so.3`, and
+with no config it stops with `/etc/porchlight/porchlightd.json: cannot be
+opened`, as it should.
+
+## Getting in: Wi-Fi once, then SSH
+
+The image holds no Wi-Fi password, and must not: it is the same for every
+device, and it is on GitHub. On first boot, on the HDMI console, once:
+
+```sh
+nmcli device status                                  # wlan0 must be listed as wifi
+nmcli --ask device wifi connect "<network name>"     # prompts, so it stays out of shell history
+ip addr show wlan0                                   # the address to ssh to
+```
+
+NetworkManager keeps the profile on the card and rejoins at every boot. Then:
+
+```powershell
+ssh -i $HOME\.ssh\porchlight_ed25519 root@<address>
+```
+
+The public half of that key is `rootfs-overlay/root/.ssh/authorized_keys`;
+the private half never leaves the PC it was made on. A reflashed card makes a
+new host key, so SSH will refuse with *REMOTE HOST IDENTIFICATION HAS CHANGED*
+until the old one goes: `ssh-keygen -R <address>`.
+
+**The Wi-Fi country is not set yet**, so the console fills with
+`brcmf_set_channel: setchanspec fail, reason -52` while it scans. It still
+joins. `dmesg -n 3` keeps it off the screen until the next boot.
 
 ## Buildroot version: 2026.02.3
 
@@ -65,10 +93,13 @@ brmake BR2_EXTERNAL=$HOME/porchlight/image/buildroot porchlight_rpi4_defconfig
 brmake 2>&1 | tee build.log
 ```
 
-About 50 minutes from clean on 4 cores, most of it the kernel. Buildroot
-remembers `BR2_EXTERNAL`, so later commands in the same `~/buildroot` do not
-need it again. The result is `output/images/sdcard.img`: a 32 MB FAT boot
-partition (firmware, `config.txt`, kernel, device tree) and a 120 MB ext4 root.
+About an hour from clean on 4 cores: the kernel is half of it, systemd,
+GLib and NetworkManager most of the rest. Buildroot remembers `BR2_EXTERNAL`,
+so later commands in the same `~/buildroot` do not need it again. The result
+is `output/images/sdcard.img`: a 32 MB FAT boot partition (firmware,
+`config.txt`, kernel, device tree), mounted at `/boot/firmware` where
+Raspberry Pi OS mounts it, and a 512 MB ext4 root, about 110 MB of it used.
+The boot partition is 84% full, so the A/B layout will need a bigger one.
 
 To flash from Windows, copy it out first, because Raspberry Pi Imager does not
 always browse `\\wsl.localhost\`:
@@ -127,7 +158,9 @@ Config.in               Our packages' menu entries, under "External options".
 external.mk             Our packages' recipes, every package/*/*.mk.
 configs/porchlight_rpi4_defconfig
                         Buildroot's raspberrypi4_64 with the board files below,
-                        the bleeding-edge toolchain, porchlightd, hostname
+                        the bleeding-edge toolchain, systemd (networkd off),
+                        NetworkManager with wpa_supplicant and dnsmasq, the
+                        Pi's Wi-Fi firmware, dropbear, porchlightd, hostname
                         porchlight and the root password hash.
 package/porchlightd/    The daemon, built from ../../porchlightd in this repo.
                         Selects libgpiod2, and json-for-modern-cpp so that
@@ -137,8 +170,12 @@ package/porchlightd/    The daemon, built from ../../porchlightd in this repo.
 board/porchlight/rpi4/  Still unchanged copies of Buildroot's Pi 4 files.
   config.txt            Read by the GPU firmware: kernel, 64-bit, overlays.
   cmdline.txt           The kernel command line: root=/dev/mmcblk0p2.
-  post-build.sh         Runs before the root filesystem is packed; adds the
-                        HDMI login prompt.
+  post-build.sh         Runs before the root filesystem is packed: the HDMI
+                        login prompt, the /boot/firmware line in fstab, and
+                        the permissions on /root/.ssh, which a Windows
+                        checkout cannot be trusted to carry.
+  rootfs-overlay/       Copied over the root filesystem as it is. So far only
+                        root/.ssh/authorized_keys, a public key.
   post-image.sh         Runs genimage to make sdcard.img.
   genimage.cfg.in       The SD card's partition layout.
   patches/linux/linux.hash
