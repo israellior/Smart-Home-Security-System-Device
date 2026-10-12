@@ -9,8 +9,8 @@
 
 #include "config.h"
 #include "core/clock.h"
+#include "core/types.h"
 #include "event_sink.h"
-#include "io/recorder.h"
 #include "reactor.h"
 #include "timer_fd.h"
 #include "unique_fd.h"
@@ -28,15 +28,23 @@ std::vector<std::string> build_pipeline(const RecorderConfig& config,
 // A separate process because a codec that segfaults should cost a clip, not
 // the doorbell, and because GStreamer would otherwise bring its own threads
 // and main loop into a daemon that has neither.
-class GstRecorder : public Recorder {
+//
+// Two obligations, both of which the core depends on. Every start is answered
+// with exactly one RecordingFinished - ok=false if the recording died, so a
+// crashed encoder is still an answer rather than silence. And a stop arriving
+// immediately after a start is safe: the clip ends early and reports the
+// length it actually got, which the core then judges against min_clip.
+class GstRecorder {
  public:
   GstRecorder(Reactor& reactor, EventSink sink, RecorderConfig config,
               std::filesystem::path spool);
-  ~GstRecorder() override;
+  ~GstRecorder();
 
-  void start(const EventId& event_id, std::chrono::seconds seconds) override;
-  void stop() override;
-  bool busy() const override { return phase_ != Phase::Idle; }
+  void start(const EventId& event_id, std::chrono::seconds seconds);
+  void stop();
+
+  // Shutdown waits on this, so the clip is not left unplayable.
+  bool busy() const { return phase_ != Phase::Idle; }
 
  private:
   // Stopping is the EOS flush. It is not instant: the muxer has to write the

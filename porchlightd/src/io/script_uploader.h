@@ -6,8 +6,9 @@
 #include <string>
 
 #include "config.h"
+#include "core/actions.h"
+#include "core/types.h"
 #include "event_sink.h"
-#include "io/clip_uploader.h"
 #include "reactor.h"
 #include "unique_fd.h"
 
@@ -27,13 +28,23 @@ std::filesystem::path sidecar_for(const std::filesystem::path& clip);
 // no business growing one - but a separate process from the bridge as well. An
 // upload is minutes of traffic to a bucket; the socket carrying alerts must not
 // wait behind it or die with it.
-class ScriptUploader : public ClipUploader {
+//
+// It deletes a clip after a successful upload, which is why discarding one is
+// its job too rather than a separate concern.
+class ScriptUploader {
  public:
   ScriptUploader(Reactor& reactor, EventSink sink, ServerConfig config, std::string device_id);
-  ~ScriptUploader() override;
+  ~ScriptUploader();
 
-  void upload(const UploadClip& clip) override;
-  void discard(const EventId& event_id, const std::string& path) override;
+  // Takes the whole action rather than a path: the confirm at the end of the
+  // upload has to state the kind, the trigger time, the duration and whether a
+  // viewer cut it short, and the core is the only thing that knows them.
+  //
+  // Always answered with an UploadFinished event, or the clip is never retried.
+  void upload(const UploadClip& clip);
+
+  // Nothing comes back for this one: the clip is simply gone.
+  void discard(const EventId& event_id, const std::string& path);
 
  private:
   void on_child_exit();

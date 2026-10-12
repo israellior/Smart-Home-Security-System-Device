@@ -159,14 +159,13 @@ cmake --build build-asan -j4
 
 **On the Pi, and nowhere else.** Every backend is a real one — GPIO for the
 button, the PIR and the LED, ALSA for the chime, the bridge to the app server,
-GStreamer for clips, `webrtc-video.py` for the call — so a binary built without
-`-DPORCHLIGHT_GPIO=ON` refuses to start and says why. The keyboard-driven fakes
-that let it run on a laptop were removed on 2026-10-01; they are in the git
-history. The unit tests still run anywhere, because they drive the core
-directly and need no backend at all.
+GStreamer for clips, `webrtc-video.py` for the call — so the binary is built
+only with `-DPORCHLIGHT_GPIO=ON`; without it there is no `porchlightd` at all.
+The keyboard-driven fakes that let it run on a laptop were removed on
+2026-10-01; they are in the git history. The unit tests still run anywhere,
+because they drive the core directly and need no backend at all.
 
-To see the command the recorder will run without running it, which works on
-any build:
+To see the command the recorder will run without running it:
 
 ```bash
 ./build/porchlightd --print-pipeline ./porchlightd.example.json
@@ -282,8 +281,8 @@ else is unreadable and the daemon fails with a permission error rather than an
 authentication one. `chown porchlight` it when the unit is what starts the
 daemon, and `chown` it to yourself while you are running it by hand.
 
-Second, the binary must be built with `-DPORCHLIGHT_GPIO=ON` or it will
-refuse to start and say which. The unit already grants
+Second, the binary only exists in a `-DPORCHLIGHT_GPIO=ON` build. The unit
+already grants
 `SupplementaryGroups=audio video gpio`, which is what lets `porchlight` open
 `/dev/gpiochip0`.
 
@@ -387,9 +386,11 @@ moment, the chime ends up **inside** every ring clip.
 
 ## The button, the PIR and the LED
 
-Everything sits behind an interface, and one file chooses the implementation:
-[`src/backends.cpp`](src/backends.cpp). Adding a real backend is a branch there
-and a line of JSON. **No core change.**
+There are no interfaces in front of the backends: each has one implementation,
+and [`src/backends.h`](src/backends.h) names it directly. The interfaces went
+on 2026-10-12, once the fakes they existed for had gone; they are in the git
+history if a second implementation is ever wanted. The core never sees any of
+this either way — it only emits actions.
 
 | Part | Config change | Files |
 |---|---|---|
@@ -399,9 +400,8 @@ and a line of JSON. **No core change.**
 | Real recorder | `backends.recorder: "gstreamer"` | step 4 |
 | Live call | `backends.media: "script"` | **done** — `io/script_media.*` |
 
-An unknown backend name is a startup error naming the key, never a silent
-default — and `"gpio"` in a binary built without it gets a *different* error
-saying so, because reading "not compiled in" as "misspelt" costs an hour.
+Each `backends.*` key now has exactly one accepted value. Anything else is a
+startup error naming the key, never a silent default.
 
 **Nothing here has run on a Pi.** It is written against libgpiod 2.2's real
 header and compiles clean under `-Wall -Wextra -Wpedantic -Wshadow`, which
@@ -409,8 +409,11 @@ proves the API and nothing about the wiring.
 
 ### Building it
 
-The backends are behind a CMake option, **off by default**, so the Windows and
-WSL2 development machines never need a dependency they cannot use:
+The GPIO code is behind a CMake option, **off by default**, so the Windows and
+WSL2 development machines never need a dependency they cannot use. With it off,
+the libraries and the tests build and **the `porchlightd` binary does not** —
+the daemon names `GpioInput` and `GpioLed` directly and cannot link without
+them. The binary is a `-DPORCHLIGHT_GPIO=ON` build only:
 
 ```bash
 sudo apt install -y libgpiod-dev          # must be 2.x
@@ -500,7 +503,7 @@ mid-call would otherwise leave the porch lit for good.
 
 ```
 src/core/        the rules. No I/O, ever. What the tests exercise.
-src/io/          one interface per thing in the world, and its real backend.
+src/io/          one class per thing in the world: GPIO, ALSA, the bridge, the scripts.
 src/             the machinery: reactor, config, logging, daemon wiring.
 tests/           91 unit tests: no hardware, no GStreamer, no GPIO, no Pi.
 docs/            decisions that outlive the code that implements them.

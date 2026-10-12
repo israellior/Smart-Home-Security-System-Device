@@ -324,7 +324,7 @@ else
   info "        -DCMAKE_BUILD_TYPE=Release -DPORCHLIGHT_GPIO=ON -DBUILD_TESTING=OFF"
   info "  cmake --build $SOURCE/porchlightd/build -j4"
   info "then run this again. -DPORCHLIGHT_GPIO=ON is what the button, the PIR"
-  info "and the LED need; without it the daemon refuses those backends by name."
+  info "and the LED need; without it no porchlightd binary is built at all."
 fi
 
 # ---------------------------------------------------------------- the config
@@ -357,8 +357,8 @@ source, target, device_id, url = sys.argv[1:5]
 config = json.load(open(source))
 config["device_id"] = device_id
 config.setdefault("server", {})["base_url"] = url
-# The real hardware, which the example cannot default to: a binary built
-# without -DPORCHLIGHT_GPIO=ON refuses these by name, which is the point.
+# The real hardware. The example already says so; this keeps an older example
+# from installing a config the daemon refuses at startup.
 config.setdefault("backends", {})["input"] = "gpio"
 config["backends"]["led"] = "gpio"
 json.dump(config, open(target, "w"), indent=2)

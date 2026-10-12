@@ -4,7 +4,7 @@
 #include <span>
 
 #include "config.h"
-#include "io/led.h"
+#include "core/types.h"
 #include "io/led_patterns.h"
 #include "reactor.h"
 #include "timer_fd.h"
@@ -23,12 +23,12 @@ namespace porch {
 // blinks has to be kept going from here. This owns a timer of its own - the
 // reactor's single one belongs to the core - and walks the phase table in
 // led_patterns.h.
-class GpioLed : public Led {
+class GpioLed {
  public:
   GpioLed(Reactor& reactor, const GpioConfig& config);
-  ~GpioLed() override;
+  ~GpioLed();
 
-  void show(LedPattern pattern) override;
+  void show(LedPattern pattern);
 
  private:
   void enter_phase(std::size_t phase);

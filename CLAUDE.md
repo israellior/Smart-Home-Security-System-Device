@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Working notes for this project. Read this first; update it at the end of any session
-that changes something here. Last updated 2026-10-01.
+that changes something here. Last updated 2026-10-12.
 
 **Also read [DESIGN.md](DESIGN.md)** and
 [docs/server-brief.md](docs/server-brief.md). This file describes the present.
@@ -724,7 +724,8 @@ unrelated one. Debian 13 trixie has 2.x; Debian 12 and Ubuntu 24.04 both still
 ship 1.6.3, which is why none of this could be compile-checked against a
 packaged header on the dev host. The backends are behind
 `-DPORCHLIGHT_GPIO=ON`, **off by default**, so WSL2 never needs a dependency it
-cannot install.
+cannot install — and with it off, the tests build but the `porchlightd` binary
+does not.
 
 ## Open problems
 
@@ -931,7 +932,10 @@ porchlightd/            The C++20 doorbell daemon, with its own README and its o
                         it on a machine with no GPIO. All behind -DPORCHLIGHT_GPIO.
                         Every backend is a real one: the keyboard-driven fakes
                         went on 2026-10-01, so the daemon runs on the Pi only
-                        and the unit tests run anywhere.
+                        and the unit tests run anywhere. The interfaces in
+                        front of them (Recorder, ServerLink, Led, ...) went on
+                        2026-10-12; src/backends.h names each class directly,
+                        so the porchlightd binary is built only with GPIO on.
 pi/webrtc-video.py      The live call. Camera and mic into LiveKit under a publisher
                         token, a viewer's mic back out of the speaker under a
                         listener token, webrtcdsp between them. No SDP, no socket

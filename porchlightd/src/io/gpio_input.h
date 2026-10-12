@@ -4,7 +4,6 @@
 
 #include "config.h"
 #include "event_sink.h"
-#include "io/input_source.h"
 #include "reactor.h"
 
 // libgpiod's own types, forward-declared so that <gpiod.h> stays inside the
@@ -19,13 +18,15 @@ namespace porch {
 // with the line it came from, which is why this watches a single thing.
 //
 // Contact debounce is the kernel's, asked for per line through the request -
-// see the note in the .cpp for why there is no debounce of ours.
-class GpioInput : public InputSource {
+// see the note in the .cpp for why there is no debounce of ours. That is
+// milliseconds and a hardware matter; the press de-dup window is seconds and
+// lives in the core.
+class GpioInput {
  public:
   GpioInput(Reactor& reactor, EventSink sink, const GpioConfig& config);
-  ~GpioInput() override;
+  ~GpioInput();
 
-  void start() override;
+  void start();
 
  private:
   void on_readable();

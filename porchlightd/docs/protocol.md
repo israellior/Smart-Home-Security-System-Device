@@ -9,8 +9,8 @@ Two channels, because they have different failure modes:
 
 | | carries | transport |
 |---|---|---|
-| `ServerLink` | alerts out, viewer requests in | the signaling WebSocket, already open |
-| `ClipUploader` | the MP4 | a separate HTTPS request per clip |
+| `BridgeServerLink` | alerts out, viewer requests in | the signaling WebSocket, already open |
+| `ScriptUploader` | the MP4 | a separate HTTPS request per clip |
 
 An alert must arrive in under a second and is small. A clip is megabytes and can
 wait. Putting them on one channel would let an upload delay a doorbell.

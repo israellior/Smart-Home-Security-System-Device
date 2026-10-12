@@ -8,8 +8,8 @@
 
 #include "config.h"
 #include "core/clock.h"
+#include "core/types.h"
 #include "event_sink.h"
-#include "io/media_controller.h"
 #include "reactor.h"
 #include "timer_fd.h"
 #include "unique_fd.h"
@@ -35,14 +35,14 @@ std::vector<std::string> build_media_command(const ServerConfig& server, const M
 // **One process serves every viewer.** A second viewer-requested while it is
 // running is nothing to act on: the Pi publishes one stream and LiveKit copies
 // it out, which is the entire reason there is an SFU.
-class ScriptMedia : public MediaController {
+class ScriptMedia {
  public:
   ScriptMedia(Reactor& reactor, EventSink sink, ServerConfig server, MediaConfig media,
               std::string device_id);
-  ~ScriptMedia() override;
+  ~ScriptMedia();
 
-  void start_call(const PeerId& peer) override;
-  void stop_call() override;
+  void start_call(const PeerId& peer);
+  void stop_call();
 
  private:
   bool spawn();

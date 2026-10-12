@@ -19,7 +19,7 @@ struct Policy {
   std::chrono::seconds motion_cooldown{25};
 
   // Seconds, and a policy: repeated presses in this window share one alert.
-  // Contact debounce is a different thing entirely and lives in InputSource.
+  // Contact debounce is a different thing entirely and lives in GpioInput.
   std::chrono::seconds press_dedup_window{5};
 
   std::chrono::seconds ring_led{5};

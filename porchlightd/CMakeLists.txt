@@ -87,8 +87,15 @@ if(PORCHLIGHT_GPIO)
   target_compile_definitions(porchlight_runtime PUBLIC PORCHLIGHT_GPIO)
 endif()
 
-add_executable(porchlightd src/main.cpp)
-target_link_libraries(porchlightd PRIVATE porchlight_runtime)
+# Only where the GPIO backends are compiled: the daemon names GpioInput and
+# GpioLed directly, with no interface in front of them, so without libgpiod it
+# cannot link. The libraries and the tests still build everywhere.
+if(PORCHLIGHT_GPIO)
+  add_executable(porchlightd src/main.cpp)
+  target_link_libraries(porchlightd PRIVATE porchlight_runtime)
+else()
+  message(STATUS "PORCHLIGHT_GPIO is off: building the tests, not the porchlightd binary")
+endif()
 
 include(CTest)
 if(BUILD_TESTING)

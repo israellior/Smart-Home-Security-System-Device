@@ -4,9 +4,9 @@
 
 #include "child_process.h"
 #include "config.h"
+#include "core/actions.h"
 #include "core/backoff.h"
 #include "event_sink.h"
-#include "io/server_link.h"
 #include "reactor.h"
 #include "timer_fd.h"
 
@@ -27,14 +27,18 @@ namespace porch {
 // The bridge reconnects on its own, so it exiting never means "the network
 // went away" - it means the bridge itself could not run, which is the class of
 // fault that recurs instantly. So a restart waits, and the wait grows.
-class BridgeServerLink : public ServerLink {
+//
+// Every send_alert must be answered with exactly one AlertResult - Delivered,
+// Rejected or Failed - or the core waits for it forever. It also reports
+// ServerOnline and ServerOffline.
+class BridgeServerLink {
  public:
   BridgeServerLink(Reactor& reactor, EventSink sink, ServerConfig config,
                    std::string device_id);
-  ~BridgeServerLink() override;
+  ~BridgeServerLink();
 
-  void start() override;
-  void send_alert(const SendAlert& alert) override;
+  void start();
+  void send_alert(const SendAlert& alert);
 
  private:
   void try_spawn();

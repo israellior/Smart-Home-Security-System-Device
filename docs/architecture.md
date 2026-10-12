@@ -20,8 +20,8 @@ records facts.
 
 | | carries | transport | why |
 |---|---|---|---|
-| `ServerLink` | alerts out, viewer requests in | one long-lived WebSocket | must arrive in under a second, tiny |
-| `ClipUploader` | the MP4 | a separate HTTPS request per clip | megabytes, can wait |
+| `BridgeServerLink` | alerts out, viewer requests in | one long-lived WebSocket | must arrive in under a second, tiny |
+| `ScriptUploader` | the MP4 | a separate HTTPS request per clip | megabytes, can wait |
 
 On one channel, an upload would delay a doorbell press.
 
