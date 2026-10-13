@@ -37,3 +37,10 @@ dtparam=i2c_arm=on
 dtparam=i2s=on
 dtoverlay=i2s-mmap
 dtoverlay=wm8960-soundcard
+
+# The Camera Module 3 (IMX708). The firmware probes the CSI port and applies
+# the sensor's overlay itself, which is how porch-2 found it. vc4-kms-v3d is
+# what porch-2 ran too: libcamera allocates its frame buffers from the CMA
+# pool, and this overlay is what sizes that pool for a camera.
+camera_auto_detect=1
+dtoverlay=vc4-kms-v3d

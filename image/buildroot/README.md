@@ -185,6 +185,12 @@ brmake rpi-firmware-rebuild all
 After removing a package, or changing the CPU, toolchain or C library, only
 `brmake clean && brmake` is trustworthy. A release build is always from clean.
 
+Switching on an option that changes *another* package's output is the same
+trap. Adding the recorder turned on gobject-introspection, but libglib2 had
+been built in Stage 1 without it, so it had never written `GLib-2.0.gir`, and
+GStreamer failed with `Couldn't find include 'GLib-2.0.gir'`. The fix was
+`brmake libglib2-dirclean all`; a clean build would never have hit it.
+
 After editing `porchlightd`'s source, `brmake porchlightd-rebuild all`. Its
 source is this repository rather than a download, so the rebuild copies the
 tree again with rsync and needs no version bump.
