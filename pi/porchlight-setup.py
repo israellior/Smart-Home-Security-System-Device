@@ -77,6 +77,17 @@ DNSMASQ_FILE = "porchlight-setup.conf"
 # broken network, so it is worth naming.
 PLAUSIBLE_CLOCK = 1735689600  # 2025-01-01
 
+# A date alone cannot tell a stale clock from a right one: a fresh card on the
+# Buildroot image starts at systemd's built-in date, after 2025 and still
+# before the server's certificate. So the clock is waited for rather than
+# judged. systemd-timesyncd creates this file once it has set the time.
+CLOCK_SYNCED = "/run/systemd/timesync/synchronized"
+CLOCK_WAIT_SECONDS = 30
+
+# OpenSSL's verify codes that mean the clock, not the network:
+# 9 is "certificate is not yet valid", 10 is "certificate has expired".
+CLOCK_VERIFY_CODES = (9, 10)
+
 # If a card was never minted there is nothing to put on a sticker, so the
 # access point still has to be findable. Nothing can be stolen through it: the
 # device holds no credential, and the page says exactly that.
@@ -457,7 +468,8 @@ def check_server(base_url, device_id, credential, timeout=20):
                  f"(code {error.reason.verify_code}), clock {time.strftime('%Y-%m-%d %H:%M:%S')}")
             # Almost always the clock: a Pi has no battery-backed one, and a
             # certificate that is not yet valid reads as a network fault.
-            if time.time() < PLAUSIBLE_CLOCK:
+            if (error.reason.verify_code in CLOCK_VERIFY_CODES
+                    or time.time() < PLAUSIBLE_CLOCK):
                 return "clock"
             return "tls"
         return "no-server"
@@ -465,15 +477,38 @@ def check_server(base_url, device_id, credential, timeout=20):
         return "no-server"
 
 
+def wait_for_clock(timeout=CLOCK_WAIT_SECONDS):
+    """Give timesyncd its moment before anything checks a certificate.
+
+    The network has only just come up, and a Pi with no battery is still on
+    whatever date it booted with. Without timesyncd there is nothing to wait
+    for, and a clock that never syncs is reported by the TLS check itself.
+    """
+    if not os.path.isdir(os.path.dirname(CLOCK_SYNCED)):
+        return
+    deadline = time.monotonic() + timeout
+    while not os.path.exists(CLOCK_SYNCED):
+        if time.monotonic() >= deadline:
+            note(f"clock still not synchronised after {timeout}s; checking anyway")
+            return
+        time.sleep(1)
+    note(f"clock synchronised: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+
+def check_clock_and_server(base_url, device_id, credential):
+    wait_for_clock()
+    return check_server(base_url, device_id, credential)
+
+
 def verify(network, base_url, device_id, credential, fake=False):
-    """Link, then names, then the app server. In that order, and stop at the
-    first that fails - anything after it would fail for the same reason and
-    report the wrong cause."""
+    """Link, then names, then the clock, then the app server. In that order,
+    and stop at the first that fails - anything after it would fail for the
+    same reason and report the wrong cause."""
     if fake:
         return None
     for stage in (lambda: check_link(network),
                   lambda: check_dns(urllib.parse.urlparse(base_url).hostname or ""),
-                  lambda: check_server(base_url, device_id, credential)):
+                  lambda: check_clock_and_server(base_url, device_id, credential)):
         cause = stage()
         if cause:
             return cause
