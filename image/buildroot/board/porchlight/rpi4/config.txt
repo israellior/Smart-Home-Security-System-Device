@@ -7,7 +7,10 @@
 start_file=start4.elf
 fixup_file=fixup4.dat
 
-kernel=Image
+# U-Boot, not Linux: it reads boot.scr, picks system slot A or B, and loads
+# that slot's own kernel. The firmware still loads the device tree and the
+# overlays below and hands them on.
+kernel=u-boot.bin
 
 # To use an external initramfs file
 #initramfs rootfs.cpio.gz

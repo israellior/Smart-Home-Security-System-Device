@@ -30,11 +30,15 @@ PORCHLIGHTD_CONF_OPTS = -DPORCHLIGHT_GPIO=ON
 # The config is the tracked example as it is: it already names the gpio
 # backends, and porchlight-firstboot.py writes device_id and server.base_url
 # into it from the birth certificate. Every unit is the same until then.
+#
+# Installed as a default, not into /etc/porchlight: that is a link to the data
+# partition (board post-build.sh), and porchlight-data.service copies the
+# default there on a fresh device, where updates leave it alone.
 define PORCHLIGHTD_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(PORCHLIGHTD_BUILDDIR)/porchlightd \
 		$(TARGET_DIR)/usr/local/bin/porchlightd
 	$(INSTALL) -D -m 0644 $(@D)/porchlightd.example.json \
-		$(TARGET_DIR)/etc/porchlight/porchlightd.json
+		$(TARGET_DIR)/usr/share/porchlight/defaults/porchlightd.json
 	mkdir -p $(TARGET_DIR)/usr/local/share/porchlight
 	$(HOST_DIR)/bin/python3 $(PORCHLIGHTD_PKGDIR)/make-chime.py \
 		$(TARGET_DIR)/usr/local/share/porchlight/chime.wav

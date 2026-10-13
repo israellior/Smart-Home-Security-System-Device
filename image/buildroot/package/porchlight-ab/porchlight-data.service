@@ -1,0 +1,16 @@
+[Unit]
+Description=Porchlight data partition: this device's own files
+# /data is mounted by local-fs.target. Everything that keeps files there waits
+# for this: firstboot writes the identity, NetworkManager reads the Wi-Fi
+# profiles, dropbear its host keys.
+After=local-fs.target
+Before=porchlight-firstboot.service NetworkManager.service dropbear.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/porchlight/porchlight-data
+
+[Install]
+WantedBy=multi-user.target

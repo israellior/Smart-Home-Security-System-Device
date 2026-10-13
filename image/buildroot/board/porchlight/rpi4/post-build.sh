@@ -37,3 +37,33 @@ if [ -d "${TARGET_DIR}/root/.ssh" ]; then
 	chmod 700 "${TARGET_DIR}/root/.ssh"
 	chmod 600 "${TARGET_DIR}/root/.ssh/authorized_keys"
 fi
+
+# The data partition: what makes this device itself, kept apart from the two
+# system slots so that an update - which replaces a whole slot - leaves it
+# alone. porchlight-data.service (package porchlight-ab) fills it on a fresh
+# device and puts the hostname back after an update.
+mkdir -p "${TARGET_DIR}/data"
+grep -q ' /data ' "${TARGET_DIR}/etc/fstab" || \
+	echo '/dev/mmcblk0p4 /data ext4 defaults,noatime 0 0' >> "${TARGET_DIR}/etc/fstab"
+
+# /etc/porchlight - credential, identity, the config firstboot patches - lives
+# on /data. porchlightd's package installs its config as a default in
+# /usr/share/porchlight/defaults; a real /etc/porchlight here is left over
+# from a build made before the data partition, and only goes.
+# The links are relative on purpose: Buildroot installs into a directory on
+# the build machine, and anything written through an absolute /data link
+# would land in the build machine's own /data.
+if [ -d "${TARGET_DIR}/etc/porchlight" ] && [ ! -L "${TARGET_DIR}/etc/porchlight" ]; then
+	rm -rf "${TARGET_DIR}/etc/porchlight"
+fi
+ln -sfn ../data/porchlight "${TARGET_DIR}/etc/porchlight"
+
+# dropbear's host keys, so a device keeps the same SSH identity across
+# updates. Buildroot points /etc/dropbear at /var/run, and its unit swaps that
+# for a directory in /etc on first boot - which is inside the slot.
+rm -rf "${TARGET_DIR}/etc/dropbear"
+ln -sfn ../data/dropbear "${TARGET_DIR}/etc/dropbear"
+
+# The mount point ships empty. Anything a reinstall wrote through the links
+# above landed here, inside the build's target directory, and is not wanted.
+rm -rf "${TARGET_DIR}/data/"*

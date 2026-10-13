@@ -1,3 +1,13 @@
+# The card, A/B:
+#
+#   p1 boot    FAT     firmware, U-Boot, boot.scr, device trees, uboot.env
+#   p2 slot A  ext4    a whole system: root filesystem with its own kernel
+#   p3 slot B  ext4    the same, the spare that an update is written into
+#   p4 data    ext4    this device's own files, which every update leaves alone
+#
+# Both slots start as the same image, so either can boot from the first day.
+# MBR allows four primary partitions, which is exactly this.
+
 image boot.vfat {
 	vfat {
 		files = {
@@ -5,7 +15,16 @@ image boot.vfat {
 		}
 	}
 
-	size = 32M
+	# Room for a newer firmware and U-Boot later; 32 MB was 84% full.
+	size = 64M
+}
+
+image data.ext4 {
+	ext4 {
+		label = "data"
+		use-mke2fs = true
+	}
+	size = 256M
 }
 
 image sdcard.img {
@@ -18,8 +37,18 @@ image sdcard.img {
 		image = "boot.vfat"
 	}
 
-	partition rootfs {
+	partition rootfs-a {
 		partition-type = 0x83
 		image = "rootfs.ext4"
+	}
+
+	partition rootfs-b {
+		partition-type = 0x83
+		image = "rootfs.ext4"
+	}
+
+	partition data {
+		partition-type = 0x83
+		image = "data.ext4"
 	}
 }

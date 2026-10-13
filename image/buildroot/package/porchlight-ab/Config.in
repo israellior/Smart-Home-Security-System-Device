@@ -1,0 +1,18 @@
+config BR2_PACKAGE_PORCHLIGHT_AB
+	bool "porchlight-ab"
+	depends on BR2_INIT_SYSTEMD
+	depends on BR2_PACKAGE_PORCHLIGHTD    # the health check watches it
+	depends on BR2_TARGET_UBOOT           # boot.scr does the choosing
+	depends on BR2_PACKAGE_RAUC
+	# RAUC's U-Boot backend changes the boot order through fw_setenv.
+	select BR2_PACKAGE_UBOOT_TOOLS
+	select BR2_PACKAGE_UBOOT_TOOLS_FWPRINTENV
+	help
+	  A/B system updates: RAUC's description of the two slots, the U-Boot
+	  environment it steers them through, the data partition that every
+	  update leaves alone, a health check that marks a booted slot good or
+	  falls back from it, and the hardware watchdog.
+
+comment "porchlight-ab needs systemd, porchlightd, U-Boot and RAUC"
+	depends on !BR2_INIT_SYSTEMD || !BR2_PACKAGE_PORCHLIGHTD || \
+		!BR2_TARGET_UBOOT || !BR2_PACKAGE_RAUC

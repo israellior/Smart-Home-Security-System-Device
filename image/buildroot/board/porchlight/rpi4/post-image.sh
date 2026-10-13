@@ -19,6 +19,11 @@ if [ ! -e "${GENIMAGE_CFG}" ]; then
 	KERNEL=$(sed -n 's/^kernel=//p' "${BINARIES_DIR}/rpi-firmware/config.txt")
 	FILES+=( "${KERNEL}" )
 
+	# config.txt's kernel= is U-Boot now, and U-Boot needs its script beside
+	# it. The Linux kernel is not on this partition at all: each system slot
+	# carries its own, so an update replaces kernel and system together.
+	FILES+=( "boot.scr" )
+
 	BOOT_FILES=$(printf '\\t\\t\\t"%s",\\n' "${FILES[@]}")
 	sed "s|#BOOT_FILES#|${BOOT_FILES}|" "${BOARD_DIR}/genimage.cfg.in" \
 		> "${GENIMAGE_CFG}"

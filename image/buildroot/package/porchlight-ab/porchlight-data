@@ -1,0 +1,37 @@
+#!/bin/sh
+# Make /data ready for the services that keep their files there. Runs at every
+# boot, before them, and changes nothing that is already right.
+#
+# The system slots are replaced whole by an update; /data is not. So what makes
+# a device itself lives here - and anything an update cannot carry over, it
+# puts back from here.
+set -e
+
+if ! grep -q ' /data ' /proc/mounts; then
+	echo "porchlight-data: /data is not mounted; the device would forget itself"
+	exit 1
+fi
+
+mkdir -p /data/porchlight /data/dropbear /data/rauc
+mkdir -p -m 0700 /data/NetworkManager/system-connections
+chmod 0755 /data/porchlight
+
+# A fresh device starts from the image's defaults. An existing one keeps its
+# own: firstboot has written its identity into these files.
+for f in /usr/share/porchlight/defaults/*; do
+	[ -e "/data/porchlight/${f##*/}" ] || cp -p "$f" /data/porchlight/
+done
+
+# The hostname and the 127.0.1.1 line are in the slot's /etc, so the first boot
+# of an update arrives with the image's name. firstboot set them once, from the
+# birth certificate; the identity it wrote is here, so set them again.
+if [ -f /data/porchlight/identity.json ]; then
+	id=$(python3 -c 'import json; print(json.load(open("/data/porchlight/identity.json"))["deviceId"])')
+	if [ -n "$id" ] && [ "$(cat /etc/hostname 2>/dev/null)" != "$id" ]; then
+		echo "$id" > /etc/hostname
+		hostname "$id"
+		sed -i "/^127\.0\.1\.1/d" /etc/hosts
+		printf '127.0.1.1\t%s\n' "$id" >> /etc/hosts
+		echo "porchlight-data: hostname $id, from the identity on /data"
+	fi
+fi

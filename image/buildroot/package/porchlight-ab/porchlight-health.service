@@ -1,0 +1,12 @@
+[Unit]
+Description=Porchlight health: tell RAUC whether this system slot is good
+After=porchlightd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/porchlight/porchlight-health
+# Five minutes of watching, plus slack; the script decides, not this.
+TimeoutStartSec=420
+
+[Install]
+WantedBy=multi-user.target
