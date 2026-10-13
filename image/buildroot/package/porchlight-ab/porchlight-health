@@ -20,26 +20,48 @@ if [ -z "$SLOT" ]; then
 	exit 0
 fi
 
-# When RAUC last installed into this slot. Empty for a slot that came from the
-# factory image, which was tested before it shipped.
-installed=$(rauc status --detailed --output-format=json 2>/dev/null | python3 -c '
-import json, sys
-slot = sys.argv[1]
-try:
-    status = json.load(sys.stdin)
-except ValueError:
+# Which install put this slot's system there, from RAUC's own status file on
+# /data - read directly, not through `rauc status --output-format=json`, which
+# this RAUC is built without: that printed nothing, an empty answer read as
+# "never installed", and a broken update was waved through as proven.
+#
+# No file, or no section for the slot: nothing was ever installed there, so it
+# is the factory image, which was tested before it shipped. Anything that
+# cannot be read is "unknown", and unknown is on trial: not knowing must never
+# be what turns the rollback off.
+STATUS=/data/rauc/central.raucs
+case "$SLOT" in A) SECTION=slot.rootfs.0 ;; B) SECTION=slot.rootfs.1 ;; esac
+installed=$(python3 - "$STATUS" "$SECTION" <<'EOF'
+import configparser, os, sys
+path, section = sys.argv[1:3]
+if not os.path.exists(path):
+    print("")
     sys.exit(0)
-for entry in status.get("slots", []):
-    for info in entry.values():
-        if info.get("bootname") == slot:
-            print(info.get("slot_status", {}).get("installed", {}).get("timestamp", ""))
-' "$SLOT")
+try:
+    status = configparser.ConfigParser(interpolation=None)
+    status.read(path)
+except (OSError, configparser.Error):
+    print("unknown")
+    sys.exit(0)
+if not status.has_section(section):
+    print("")
+else:
+    # The transaction is unique per install; the timestamp is the fallback.
+    s = status[section]
+    print(s.get("installed.transaction") or s.get("installed.timestamp") or "unknown")
+EOF
+) || installed=unknown
 
 proven=/data/rauc/proven-$SLOT
 trial=no
-if [ -n "$installed" ] && [ "$(cat "$proven" 2>/dev/null)" != "$installed" ]; then
+if [ "$installed" = unknown ]; then
 	trial=yes
-	echo "porchlight-health: slot $SLOT is on trial (installed $installed)"
+	echo "porchlight-health: cannot read what was installed in slot $SLOT; treating it as on trial"
+elif [ -n "$installed" ] && [ "$(cat "$proven" 2>/dev/null)" != "$installed" ]; then
+	trial=yes
+	echo "porchlight-health: slot $SLOT is on trial (install $installed)"
+else
+	echo "porchlight-health: slot $SLOT is ${installed:+proven (install $installed)}${installed:-the factory system}"
 fi
 
 uptime_us() { awk '{ printf "%d", $1 * 1000000 }' /proc/uptime; }

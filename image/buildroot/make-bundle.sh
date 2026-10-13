@@ -17,16 +17,19 @@ BR=${BUILDROOT:-$HOME/buildroot}
 KEYS=${PORCHLIGHT_KEYS:-$HOME/porchlight-keys}
 VERSION=${1:-$(date -u +%Y%m%d%H%M)}
 IMAGES=$BR/output/images
+# Another root filesystem image instead of the one just built - a test copy
+# with something changed in it, to prove an update or a rollback.
+ROOTFS=${ROOTFS:-$IMAGES/rootfs.ext4}
 export PATH="$BR/output/host/bin:$BR/output/host/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-for f in "$KEYS/dev.key.pem" "$KEYS/dev.cert.pem" "$IMAGES/rootfs.ext4"; do
+for f in "$KEYS/dev.key.pem" "$KEYS/dev.cert.pem" "$ROOTFS"; do
 	[ -e "$f" ] || { echo "make-bundle: $f is missing" >&2; exit 1; }
 done
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-cp -L "$IMAGES/rootfs.ext4" "$WORK/rootfs.ext4"
+cp -L "$ROOTFS" "$WORK/rootfs.ext4"
 cat > "$WORK/manifest.raucm" <<EOF
 [update]
 compatible=porchlight-rpi4
