@@ -110,6 +110,64 @@ The Wi-Fi country is IL, from `rootfs-overlay/etc/modprobe.d/cfg80211.conf`
 and `wireless-regdb`. Without one, every scan asked the chip for Japan-only
 channels and logged `set chanspec ... fail, reason -52` for each.
 
+## A/B updates: U-Boot and RAUC
+
+The card is four partitions: **boot** (64 MB FAT: GPU firmware, U-Boot,
+`boot.scr`, device trees, `config.txt`, `uboot.env`), **slot A** and
+**slot B** (512 MB each: a whole root filesystem, each with its own kernel in
+`/boot`), and **data** (`/data`: the credential, identity and config,
+Wi-Fi profiles, SSH host keys, RAUC's status). An update writes the slot that
+is not running; the data partition is never touched.
+
+The firmware starts U-Boot; `boot.cmd` takes the first slot in
+`BOOT_ORDER` with attempts left in `BOOT_x_LEFT`, spends one, saves, and
+boots it. `porchlight-health` gives the attempts back (`rauc status
+mark-good`) once porchlightd has run 60 s without restarting - steady, not
+"reached the server", so an internet outage never rolls back a good update.
+A freshly installed slot that never gets there is marked bad and the device
+reboots into the other. A slot that runs out of attempts is skipped; if
+both run out, both get three again rather than never booting.
+
+```bash
+image/buildroot/make-bundle.sh 2026.10.13-1        # -> output/images/porchlight-2026.10.13-1.raucb
+ssh root@<pi> "cat > /data/update.raucb" < porchlight-2026.10.13-1.raucb
+ssh root@<pi> "rauc install /data/update.raucb && reboot"
+ssh root@<pi> "rauc status; fw_printenv BOOT_ORDER BOOT_A_LEFT BOOT_B_LEFT"
+```
+
+The signing key is in `~/porchlight-keys` on the build machine and nowhere
+else; the image holds only its certificate (`package/porchlight-ab/keyring.pem`).
+
+**A bundle updates the slots only.** The boot partition is shared by both
+and nothing updates it after the factory: a change to `config.txt`,
+`cmdline.txt`, `boot.scr`, U-Boot or the firmware needs a reflash, or an
+update step of its own that does not exist yet.
+
+**What the first boot on the Pi found** (2026-10-13), each fixed on the card
+by hand, then here:
+
+- **`dtoverlay=miniuart-bt` hangs U-Boot on the rainbow screen.** Buildroot's
+  Pi config swaps the UARTs for a serial console; U-Boot, which sets up the
+  serial port first thing, never gets further. Found by bisecting
+  `config.txt` down to five lines and adding back. Removed; `enable_uart=1`
+  stays. The kernel console is `serial0`, not `ttyAMA0`, which is now
+  Bluetooth's.
+- **A saved `fdt_addr` is stale.** U-Boot fills in where the firmware put
+  this boot's device tree only if the variable is unset, and `saveenv` saved
+  it - so the next boot, with different overlays, read garbage
+  (`FDT_ERR_BADMAGIC`). `boot.cmd` copies it to `dtb`, deletes it, and saves.
+- **U-Boot 2024.01, not Buildroot's 2026.01.** The faults above were the
+  same on both; 2024.01 is what was proven, so it is pinned, with its hash in
+  `board/porchlight/rpi4/patches/uboot/`. 2026.01 is untried with the fixes.
+- **A failed boot waits at `U-Boot>` forever**, which on a doorbell is the
+  same as dead. `boot.cmd` ends in `reset`, so the attempt is spent and the
+  fallback happens.
+
+The U-Boot prompt is how it was found: stop autoboot with a key, then
+`printenv fdt_addr`, `md 0x03000000 4` (a device tree starts `d00dfeed`) and
+`fdt addr 0x03000000; fdt header`. `uboot.env` on the FAT partition is
+readable from Windows too: the counters say how many times it went round.
+
 ## Buildroot version: 2026.02.3
 
 Pinned on purpose. `.02` releases are Buildroot's LTS and get fixes for a

@@ -1,0 +1,5 @@
+# U-Boot 2024.01: the version proven on the Pi with this boot.cmd and
+# config.txt (2026-10-13). Buildroot's own hash file covers only the versions it
+# ships, and BR2_DOWNLOAD_FORCE_CHECK_HASHES refuses anything unhashed.
+# Computed locally from ftp.denx.de's tarball.
+sha256  b99611f1ed237bf3541bdc8434b68c96a6e05967061f992443cb30aabebef5b3  u-boot-2024.01.tar.bz2

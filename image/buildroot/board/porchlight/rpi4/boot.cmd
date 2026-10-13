@@ -41,17 +41,34 @@ fi
 
 echo "porchlight: booting slot ${slot} (A left ${BOOT_A_LEFT}, B left ${BOOT_B_LEFT})"
 # Saved before the kernel starts, so a crash anywhere after this still counts.
+# Not fdt_addr: it is where the firmware put this boot's device tree, U-Boot
+# only fills it in when it is unset, and a saved one is stale the moment the
+# overlays change - the next boot then finds no device tree (FDT_ERR_BADMAGIC).
+# So it is copied to dtb first, deleted for the save, and dtb used from here.
+# dtb is saved too, but it is set again from fdt_addr before every use.
+setenv dtb ${fdt_addr}
+env delete fdt_addr
 saveenv
 
+# The device tree is the firmware's, built from config.txt and its overlays,
+# at the address U-Boot found it on this boot (dtb, above). Not U-Boot's own
+# working copy: the firmware's is what the kernel is meant to get.
+#
 # The firmware has already turned cmdline.txt and its own settings into the
 # device tree's /chosen/bootargs. Keep all of that, and add only what
 # differs per slot. panic=10: a kernel that panics reboots, and the reboot
 # spends an attempt.
-fdt addr ${fdt_addr}
+fdt addr ${dtb}
 fdt get value fw_bootargs /chosen bootargs
 setenv bootargs "${fw_bootargs} root=/dev/mmcblk0p${part} rootwait rauc.slot=${slot} panic=10"
 
 # Each slot carries its own kernel in /boot, so an update replaces kernel and
-# system together. The device tree stays the firmware's, from the FAT partition.
+# system together.
 load mmc 0:${part} ${kernel_addr_r} /boot/Image
-booti ${kernel_addr_r} - ${fdt_addr}
+booti ${kernel_addr_r} - ${dtb}
+
+# Only reached if that failed. Waiting at a U-Boot prompt helps nobody on a
+# doorbell; restarting spends this slot's attempt, and after three U-Boot
+# falls back to the other slot.
+echo "porchlight: slot ${slot} did not boot; restarting"
+reset

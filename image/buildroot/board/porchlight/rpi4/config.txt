@@ -25,11 +25,21 @@ gpu_mem_256=100
 gpu_mem_512=100
 gpu_mem_1024=100
 
-# Enable UART0 for serial console on ttyAMA0
-dtoverlay=miniuart-bt
+# U-Boot sets up the serial port first thing, and wants the firmware to have
+# enabled it. Not miniuart-bt, which Buildroot's Pi config has for a serial
+# console on GPIO 14/15: with the two UARTs swapped, U-Boot hangs on the
+# rainbow screen before it draws anything. Found by bisecting config.txt on
+# the card, 2026-10-13. Nothing here uses a serial console or Bluetooth.
+enable_uart=1
 
 # enable 64bits support
 arm_64bit=1
+
+# A fixed place for the firmware's device tree, low in RAM and out of the way
+# of the kernel (which ends near 0x19c0000) and of U-Boot, which relocates
+# itself to the top. What Ubuntu's U-Boot images do on the Pi; it was in place
+# when the boot first worked, though it was not shown to be needed on its own.
+device_tree_address=0x03000000
 
 # The Waveshare WM8960 audio HAT: the chime, and later the call's microphone
 # and speaker. Copied from porch-2's working Raspberry Pi OS config. I2C is how
