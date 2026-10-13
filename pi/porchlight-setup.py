@@ -64,6 +64,18 @@ AP_CONNECTION = "porchlight-setup"
 AP_ADDRESS = "192.168.4.1"
 AP_PREFIX = 24
 
+# Pinned rather than left to NetworkManager, which picked 6 on one boot and 11
+# on the next. On 11 the Pi 4's access point came and went every two minutes
+# and a phone held right beside it could not join; on 6 it joined at once.
+AP_CHANNEL = 6
+
+# Joining fails for the first ten seconds or so after the access point goes
+# down - association times out (status 16), three times in a row, then works
+# minutes later. So a failed join is tried again after a pause longer than
+# that, and only a failure that repeats is believed.
+JOIN_ATTEMPTS = 3
+JOIN_RETRY_SECONDS = 15
+
 # Where NetworkManager's shared-mode dnsmasq reads extra configuration. Sending
 # every name to ourselves is what makes the setup page open by itself: a phone
 # joining a network immediately fetches a known URL to find out whether it has
@@ -309,6 +321,7 @@ class Network:
             "connection", "add", "type", "wifi", "ifname", self.interface,
             "con-name", AP_CONNECTION, "autoconnect", "no", "ssid", ssid,
             "802-11-wireless.mode", "ap", "802-11-wireless.band", "bg",
+            "802-11-wireless.channel", str(AP_CHANNEL),
             "ipv4.method", "shared",
             "ipv4.addresses", f"{AP_ADDRESS}/{AP_PREFIX}",
             "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", psk,
@@ -356,11 +369,28 @@ class Network:
         return False
 
     def join(self, ssid, psk):
-        """Returns None on success, or a cause the page can turn into a sentence."""
+        """Returns None on success, or a cause the page can turn into a sentence.
+
+        Tried JOIN_ATTEMPTS times. NetworkManager reports any failed first
+        join of a new profile as missing secrets, so "wifi-auth" from one
+        attempt is not evidence of a wrong password; the same answer three
+        times, fifteen seconds apart, is.
+        """
         if not self._wait_to_see(ssid):
             # Tried anyway: a hidden network never shows in a scan, and nmcli's
             # own answer is the one the page knows how to explain.
             note(f"{ssid} did not show in a scan after the access point went down")
+        for attempt in range(1, JOIN_ATTEMPTS + 1):
+            cause = self._join_once(ssid, psk)
+            if cause is None:
+                return None
+            note(f"join attempt {attempt} of {JOIN_ATTEMPTS}: {cause}")
+            if attempt < JOIN_ATTEMPTS:
+                self.forget(ssid)  # a half-made profile would be retried as it is
+                time.sleep(JOIN_RETRY_SECONDS)
+        return cause
+
+    def _join_once(self, ssid, psk):
         args = ["device", "wifi", "connect", ssid, "ifname", self.interface]
         if psk:
             args += ["password", psk]
