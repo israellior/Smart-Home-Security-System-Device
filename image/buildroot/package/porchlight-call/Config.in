@@ -1,0 +1,21 @@
+config BR2_PACKAGE_PORCHLIGHT_CALL
+	bool "porchlight-call"
+	# The camera, the card and Python's GStreamer bindings come with the
+	# recorder; the call reuses all of them.
+	depends on BR2_PACKAGE_PORCHLIGHT_RECORDER
+	depends on BR2_PACKAGE_PYTHON_LIVEKIT
+	# appsink and appsrc: frames and samples between GStreamer and Python.
+	select BR2_PACKAGE_GST1_PLUGINS_BASE_PLUGIN_APP
+	# textoverlay: the clock on the picture. Pango needs a font to draw it.
+	select BR2_PACKAGE_GST1_PLUGINS_BASE_PLUGIN_PANGO
+	select BR2_PACKAGE_DEJAVU
+	# level: the talk-back meter that says audio reached the sink.
+	select BR2_PACKAGE_GST1_PLUGINS_GOOD_PLUGIN_LEVEL
+	# webrtcdsp and webrtcechoprobe: echo cancellation, mic against speaker.
+	select BR2_PACKAGE_GST1_PLUGINS_BAD_PLUGIN_WEBRTCDSP
+	help
+	  webrtc-video.py, the live call: the camera and microphone published
+	  to LiveKit, and a viewer's voice played on the doorbell's speaker.
+
+comment "porchlight-call needs porchlight-recorder and python-livekit"
+	depends on !BR2_PACKAGE_PORCHLIGHT_RECORDER || !BR2_PACKAGE_PYTHON_LIVEKIT

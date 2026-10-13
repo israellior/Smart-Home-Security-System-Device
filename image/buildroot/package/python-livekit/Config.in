@@ -1,0 +1,20 @@
+config BR2_PACKAGE_PYTHON_LIVEKIT
+	bool "python-livekit"
+	depends on BR2_PACKAGE_PYTHON3
+	# A prebuilt wheel: LiveKit's own aarch64 build of its Rust core,
+	# linked against glibc 2.28 or newer. Nothing else can run it.
+	depends on BR2_aarch64
+	depends on BR2_TOOLCHAIN_USES_GLIBC
+	# Repeated from python-numpy, because select does not check them.
+	depends on BR2_PACKAGE_PYTHON_NUMPY_ARCH_SUPPORTS
+	depends on BR2_INSTALL_LIBSTDCPP
+	depends on BR2_TOOLCHAIN_GCC_AT_LEAST_9
+	select BR2_PACKAGE_PYTHON_PROTOBUF
+	select BR2_PACKAGE_PYTHON_AIOFILES
+	select BR2_PACKAGE_PYTHON_NUMPY
+	help
+	  The LiveKit Python SDK (livekit.rtc), installed from LiveKit's
+	  prebuilt manylinux aarch64 wheel. Its core is Rust, reached through
+	  a native library, so building it here would need a Rust toolchain.
+
+	  https://github.com/livekit/python-sdks

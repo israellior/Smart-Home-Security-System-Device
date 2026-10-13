@@ -4,3 +4,5 @@
 source "$BR2_EXTERNAL_PORCHLIGHT_PATH/package/porchlightd/Config.in"
 source "$BR2_EXTERNAL_PORCHLIGHT_PATH/package/porchlight-boot/Config.in"
 source "$BR2_EXTERNAL_PORCHLIGHT_PATH/package/porchlight-recorder/Config.in"
+source "$BR2_EXTERNAL_PORCHLIGHT_PATH/package/python-livekit/Config.in"
+source "$BR2_EXTERNAL_PORCHLIGHT_PATH/package/porchlight-call/Config.in"
