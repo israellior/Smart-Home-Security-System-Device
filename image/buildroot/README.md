@@ -4,19 +4,19 @@ A `BR2_EXTERNAL` tree: everything that makes the image *ours* lives here, and
 Buildroot itself stays an untouched download. It builds a Raspberry Pi 4 SD
 card image running systemd and NetworkManager - the two things the doorbell's
 own programs assume, because they were written for Raspberry Pi OS - with Wi-Fi,
-an SSH server, `porchlightd` and its config and user, and the two programs that
-run before it at every boot: `porchlight-firstboot.py` and
-`porchlight-setup.py`. Not in it yet: `porchlightd` as a running service, the
-other Python halves (bridge, recorder, uploader, call), the WM8960 overlay, the
-camera.
+an SSH server, the two programs that run first at every boot
+(`porchlight-firstboot.py`, `porchlight-setup.py`), and `porchlightd` running
+as a service with its WebSocket bridge. Not in it yet: the chime, the
+recorder and uploader, the live call, the WM8960 overlay, the camera.
 
-**Status, 2026-10-13:** the device's first-boot path runs on the Pi, against
-production. A birth certificate on the boot partition became `porch-2`;
-setup raised `Porchlight-W6V5`, a phone joined it and chose the home network;
-the Pi joined, and `api.porchl.stream` accepts its credential - from a
-deleted profile and a reboot, one Connect, 41 s. Getting there found four
-faults in `setup.py` and one gap in the image - see "What the first boot
-found" below.
+**Status, 2026-10-13:** a freshly flashed card does the whole first boot on
+the Pi, against production. A birth certificate on the boot partition became
+`porch-2`; setup raised its access point, a phone chose the home network with
+one Connect, and 0.3 s after setup finished `porchlightd` started as
+`porchlight`, opened the button, PIR and LED lines, and its bridge connected:
+the app shows the doorbell online, and a button press reaches it as a ring.
+Getting there found four faults in `setup.py` and one gap in the image - see
+"What the first boot found" below.
 
 ## Getting in
 
@@ -219,14 +219,17 @@ configs/porchlight_rpi4_defconfig
 package/porchlightd/    The daemon, built from ../../porchlightd in this repo.
                         Selects libgpiod2, and json-for-modern-cpp so that
                         CMake finds nlohmann/json rather than fetching it from
-                        GitHub mid-build. Installs /usr/bin/porchlightd itself,
-                        because CMakeLists.txt has no install() rules, and the
-                        example config as /etc/porchlight/porchlightd.json.
-                        Creates the porchlight user and its spool directory.
+                        GitHub mid-build. Installs /usr/local/bin/porchlightd
+                        itself, because CMakeLists.txt has no install() rules,
+                        the example config as /etc/porchlight/porchlightd.json,
+                        and porchlightd.service, which preset-all enables.
+                        Creates the porchlight user in audio, video and gpio,
+                        and its spool directory.
 package/porchlight-boot/
-                        firstboot and setup from ../../pi, and their two units,
-                        which Buildroot's preset-all enables. Selects Python
-                        with ssl, python-gpiod, dnsmasq and ca-certificates.
+                        firstboot, setup and server-bridge.py from ../../pi,
+                        and the two boot units, which preset-all enables.
+                        Selects Python with ssl, python-gpiod,
+                        python-websocket-client, dnsmasq and ca-certificates.
 board/porchlight/rpi4/  Copies of Buildroot's Pi 4 files, now ours.
   config.txt            Read by the GPU firmware: kernel, 64-bit, overlays.
   cmdline.txt           The kernel command line: root=/dev/mmcblk0p2.
@@ -236,9 +239,12 @@ board/porchlight/rpi4/  Copies of Buildroot's Pi 4 files, now ours.
                         checkout cannot be trusted to carry.
   rootfs-overlay/       Copied over the root filesystem, permissions then set
                         by post-build.sh: root/.ssh/authorized_keys (a public
-                        key), the Wi-Fi country, and NetworkManager's
+                        key), the Wi-Fi country, NetworkManager's
                         firewall-backend=none - the setup access point shares
-                        nothing, and there is no nft or iptables to share with.
+                        nothing, and there is no nft or iptables to share with
+                        - and the udev rule that gives /dev/gpiochip* to the
+                        gpio group, without which porchlightd cannot open the
+                        button, the PIR or the LED.
   post-image.sh         Runs genimage to make sdcard.img.
   genimage.cfg.in       The SD card's partition layout.
   patches/linux/linux.hash
