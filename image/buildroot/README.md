@@ -13,9 +13,10 @@ camera.
 **Status, 2026-10-13:** the device's first-boot path runs on the Pi, against
 production. A birth certificate on the boot partition became `porch-2`;
 setup raised `Porchlight-W6V5`, a phone joined it and chose the home network;
-the Pi joined, and `api.porchl.stream` accepts its credential. Getting there
-found two races in `setup.py` and one gap in the image - see "What the first
-boot found" below.
+the Pi joined, and `api.porchl.stream` accepts its credential - from a
+deleted profile and a reboot, one Connect, 41 s. Getting there found four
+faults in `setup.py` and one gap in the image - see "What the first boot
+found" below.
 
 ## Getting in
 
@@ -68,11 +69,26 @@ Each of these passed every test on the build host and failed on the Pi.
 - **No CA certificates.** Every HTTPS request would have failed verification;
   `ca-certificates` is now selected by `porchlight-boot`.
 - **The clock, at first boot.** A fresh card starts at systemd's built-in
-  date, March 2026, which is before the server's certificate was issued.
-  Setup calls a clock before 2025 "clock" and anything later "tls", so the
-  page said *could not be verified*. Not yet fixed; the journal now carries
-  OpenSSL's own reason. The journal is also kept in memory only, so a reboot
-  takes the evidence with it.
+  date, March 2026, which is before the server's certificate was issued, and
+  setup called anything after 2025 "tls" - *could not be verified*. Setup now
+  waits for timesyncd's `/run/systemd/timesync/synchronized` before the HTTPS
+  check (about 20 s on the Pi), and OpenSSL's codes 9 and 10 read as "clock".
+- **The access point's channel.** NetworkManager chose 6 one boot and 11 the
+  next; on 11 the access point came and went every two minutes and a phone
+  beside the Pi could not join. Setup pins channel 6.
+- **The join, right after the access point.** Association timed out
+  (`ASSOC-REJECT status_code=16`) three times within ten seconds of the
+  access point going down, and NetworkManager reported that as missing
+  secrets, so the page blamed the password. Setup retries three times, 15 s
+  apart.
+
+With all of them, on 2026-10-13: one Connect, 41 s to "joined SGisrael and
+reached the app server".
+
+Still open: the journal is kept in memory only, so a reboot takes the
+evidence with it, and after the access point goes down the Wi-Fi country
+briefly resets to the world domain - the `set chanspec ... fail` burst in
+`dmesg` is that, and it is noise rather than a fault.
 
 The Wi-Fi country is IL, from `rootfs-overlay/etc/modprobe.d/cfg80211.conf`
 and `wireless-regdb`. Without one, every scan asked the chip for Japan-only
