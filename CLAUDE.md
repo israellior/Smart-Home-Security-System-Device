@@ -68,7 +68,7 @@ the viewer is the app rather than a page served from here.
 | — | Provisioning, and a link that comes and goes | **provisioning done 2026-09-26** (`--image --apply`, `--verify` 3 of 3). Reconnecting never drilled on the Pi |
 | — | A device that ships: identity at the factory, wi-fi from a phone | **done 2026-09-26** — porch-2 from a birth certificate, set up from a phone, claimed in the app |
 | — | Clips of the right length | **fixed 2026-09-26** — every clip claimed 204 hours; see "The clock" |
-| — | An image of our own, built with Buildroot | **runs on the Pi 2026-10-13** on branch `product-image` — from a freshly flashed card: birth certificate, setup access point, one Connect from a phone, then `porchlightd` as a service with GPIO and its bridge; porch-2 online in the app, a press arrives as a ring. No chime, recorder or call yet. See `image/buildroot/README.md` |
+| — | An image of our own, built with Buildroot | **runs on the Pi 2026-10-13** on branch `product-image` — from a freshly flashed card: birth certificate, setup access point, one Connect from a phone, then `porchlightd` as a service with GPIO and its bridge; porch-2 online in the app; a press chimes, rings, and records a 15 s clip that uploads. Upstream libcamera, so the narrower binned sensor mode; no call yet. See `image/buildroot/README.md` |
 
 ### Read this first: what has run on hardware, and what has not
 

@@ -6,8 +6,8 @@ card image running systemd and NetworkManager - the two things the doorbell's
 own programs assume, because they were written for Raspberry Pi OS - with Wi-Fi,
 an SSH server, the two programs that run first at every boot
 (`porchlight-firstboot.py`, `porchlight-setup.py`), and `porchlightd` running
-as a service with its WebSocket bridge. Not in it yet: the chime, the
-recorder and uploader, the live call, the WM8960 overlay, the camera.
+as a service with its WebSocket bridge, the WM8960 chime, and the recorder
+and uploader on the Camera Module 3. Not in it yet: the live call.
 
 **Status, 2026-10-13:** a freshly flashed card does the whole first boot on
 the Pi, against production. A birth certificate on the boot partition became
@@ -16,7 +16,16 @@ one Connect, and 0.3 s after setup finished `porchlightd` started as
 `porchlight`, opened the button, PIR and LED lines, and its bridge connected:
 the app shows the doorbell online, and a button press reaches it as a ring.
 Getting there found four faults in `setup.py` and one gap in the image - see
-"What the first boot found" below.
+"What the first boot found" below. A press now chimes from the HAT and records
+a 15 s clip that uploads and confirms.
+
+**The camera runs on upstream libcamera, not Raspberry Pi's.** Upstream's
+`libcamerasrc` has no `sensor-config`, so libcamera picks the IMX708's binned
+1536x864 mode, which reads only the centre of the sensor: about 98° of the
+wide lens's 120°. Raspberry Pi's libcamera, as a package of our own, is what
+gets the rest back. Its DMA heaps also needed a udev rule
+(`60-dma-heap.rules`): without it libcamera, running as `porchlight`, logged
+`Could not open any dma-buf provider` and found no camera.
 
 ## Getting in
 

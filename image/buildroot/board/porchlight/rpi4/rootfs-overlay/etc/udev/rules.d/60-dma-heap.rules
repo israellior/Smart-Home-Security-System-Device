@@ -1,0 +1,6 @@
+# libcamera allocates the camera's frame buffers from a DMA heap, and the heaps
+# belong to root alone unless something says otherwise. porchlightd's recorder
+# runs as porchlight, in the video group, and without this libcamera logs
+# "Could not open any dma-buf provider" and finds no camera at all (-ENOMEM).
+# Raspberry Pi OS ships the same rule.
+SUBSYSTEM=="dma_heap", GROUP="video", MODE="0660"
