@@ -16,6 +16,16 @@ mkdir -p /data/porchlight /data/dropbear /data/rauc
 mkdir -p -m 0700 /data/NetworkManager/system-connections
 chmod 0755 /data/porchlight
 
+# The system log, so a boot that goes wrong leaves its account behind for the
+# next one to read. journald holds early messages in RAM until
+# systemd-journal-flush moves them to /var/log/journal, and that service is
+# ordered after this one. A bind mount rather than a link: to journald and to
+# systemd-tmpfiles, which sets its permissions, it is an ordinary directory.
+mkdir -p /data/journal /var/log/journal
+if ! grep -q ' /var/log/journal ' /proc/mounts; then
+	mount --bind /data/journal /var/log/journal
+fi
+
 # A fresh device starts from the image's defaults. An existing one keeps its
 # own: firstboot has written its identity into these files.
 for f in /usr/share/porchlight/defaults/*; do

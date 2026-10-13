@@ -138,6 +138,21 @@ ssh root@<pi> "rauc status; fw_printenv BOOT_ORDER BOOT_A_LEFT BOOT_B_LEFT"
 The signing key is in `~/porchlight-keys` on the build machine and nowhere
 else; the image holds only its certificate (`package/porchlight-ab/keyring.pem`).
 
+**The system log is on `/data` too** (`/data/journal`, bind-mounted at
+`/var/log/journal`, held to 32 MB), so a boot that went wrong can be read on
+the next good one: `journalctl --list-boots`, then `journalctl -b -1`. Each
+slot has its own machine ID, so after an update the other slot's boots are in
+a different directory: `journalctl -D /var/log/journal/<id>` reads them.
+
+**Proven on the Pi, 2026-10-13:** a good bundle installed into the spare slot
+in 25 s, booted, kept the identity, Wi-Fi and credential, and was marked good;
+a bundle whose porchlightd fails was booted, judged on trial, marked bad after
+five minutes, and the Pi went back to the slot before it on its own. The first
+rollback attempt did not roll back - see `porchlight-health`: it trusted
+`rauc status --output-format=json`, which this RAUC cannot produce, and an
+empty answer meant "proven". It reads RAUC's status file now, and treats
+anything it cannot read as on trial.
+
 **A bundle updates the slots only.** The boot partition is shared by both
 and nothing updates it after the factory: a change to `config.txt`,
 `cmdline.txt`, `boot.scr`, U-Boot or the firmware needs a reflash, or an
