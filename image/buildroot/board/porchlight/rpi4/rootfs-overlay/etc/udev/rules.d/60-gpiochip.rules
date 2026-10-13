@@ -1,0 +1,5 @@
+# The GPIO character devices belong to root alone unless something says
+# otherwise, and porchlightd runs as porchlight, in the gpio group. Raspberry
+# Pi OS ships the same rule; without it the daemon cannot open the button, the
+# PIR or the LED, and exits at startup.
+SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"

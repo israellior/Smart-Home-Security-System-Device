@@ -10,7 +10,9 @@ PORCHLIGHT_BOOT_SITE = $(BR2_EXTERNAL_PORCHLIGHT_PATH)/../../pi
 PORCHLIGHT_BOOT_SITE_METHOD = local
 PORCHLIGHT_BOOT_LICENSE = Proprietary
 
-# Nothing to compile: two Python scripts and their units.
+# Nothing to compile: Python scripts and two units. firstboot and setup run
+# before the daemon; server-bridge.py is the daemon's child, holding the one
+# WebSocket that makes the device "online" in the app.
 PORCHLIGHT_BOOT_DEPENDENCIES = porchlightd
 
 # The scripts go where provision.sh puts them on Raspberry Pi OS, because the
@@ -20,6 +22,8 @@ define PORCHLIGHT_BOOT_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/local/lib/porchlight/porchlight-firstboot.py
 	$(INSTALL) -D -m 0755 $(@D)/porchlight-setup.py \
 		$(TARGET_DIR)/usr/local/lib/porchlight/porchlight-setup.py
+	$(INSTALL) -D -m 0755 $(@D)/server-bridge.py \
+		$(TARGET_DIR)/usr/local/lib/porchlight/server-bridge.py
 endef
 
 # Installing a unit is enough to enable it: Buildroot runs systemctl preset-all

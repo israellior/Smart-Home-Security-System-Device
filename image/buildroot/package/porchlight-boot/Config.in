@@ -21,12 +21,15 @@ config BR2_PACKAGE_PORCHLIGHT_BOOT
 	select BR2_PACKAGE_PYTHON_GPIOD
 	# NetworkManager's shared mode runs it to hand the phone an address.
 	select BR2_PACKAGE_DNSMASQ
+	# server-bridge.py's WebSocket to the app server.
+	select BR2_PACKAGE_PYTHON_WEBSOCKET_CLIENT
 	help
-	  The two programs that run before porchlightd at every boot:
+	  The device's Python programs that need nothing but Python:
 	  porchlight-firstboot.py turns a flashed card into a particular
-	  doorbell from the birth certificate on the boot partition, and
+	  doorbell from the birth certificate on the boot partition,
 	  porchlight-setup.py gets it onto a network, raising its own
-	  access point for a phone when it has none.
+	  access point for a phone when it has none, and server-bridge.py
+	  is porchlightd's WebSocket to the app server.
 
 comment "porchlight-boot needs systemd, NetworkManager and porchlightd"
 	depends on !BR2_INIT_SYSTEMD || !BR2_PACKAGE_NETWORK_MANAGER || \
