@@ -77,6 +77,26 @@ TEST(Pipeline, CameraSetsFocusBecauseItDefaultsToInfinity) {
   EXPECT_TRUE(has(build_pipeline(camera_config(), "/tmp/x.mp4"), "af-mode=continuous"));
 }
 
+// Both of those go to record-clip.py, never into the pipeline. sensor-config
+// exists only in Raspberry Pi's libcamera; on the Buildroot image's upstream
+// build it failed the whole parse, and every clip recorded nothing. Past the
+// "--" the camera is only named, so record-clip.py can find it and set each
+// property the element actually has.
+TEST(Pipeline, CameraPropertiesNeverReachTheLaunchString) {
+  const auto args = build_pipeline(camera_config(), "/tmp/x.mp4");
+  const auto separator = std::find(args.begin(), args.end(), std::string{"--"});
+  ASSERT_NE(separator, args.end());
+  const std::vector<std::string> before(args.begin(), separator);
+  const std::vector<std::string> after(separator + 1, args.end());
+  EXPECT_TRUE(has(before, "af-mode=continuous"));
+  EXPECT_TRUE(contains(before, "sensor-config="));
+  EXPECT_FALSE(contains(after, "af-mode"));
+  EXPECT_FALSE(contains(after, "sensor-config"));
+  const auto camera = std::find(after.begin(), after.end(), std::string{"libcamerasrc"});
+  ASSERT_NE(camera, after.end());
+  EXPECT_EQ(*(camera + 1), "name=camera");
+}
+
 // None of those belong on videotestsrc, and a stray one is a parse failure at
 // record time - which is the worst moment to discover it.
 TEST(Pipeline, TestSourceCarriesNoCameraProperties) {

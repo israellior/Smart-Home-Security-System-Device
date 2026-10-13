@@ -6,7 +6,8 @@ stops it with SIGINT. SIGINT becomes EOS, EOS flushes the muxer, and the exit
 code says whether it got that far - exactly the contract gst-launch -e had, so
 the daemon's side of it did not change.
 
-  record-clip.py [--system-clock] -- mp4mux name=mux ! filesink location=... ...
+  record-clip.py [--system-clock] [--camera-property NAME=VALUE ...] \
+                 -- mp4mux name=mux ! filesink location=... ...
 
 --system-clock is why this file exists. alsasrc offers the sound card as the
 pipeline clock and libcamerasrc stamps its frames against the system monotonic
@@ -16,6 +17,11 @@ pipeline.use_clock(), and there is no switch for it on a gst-launch command
 line. alsasrc provide-clock=false looked like the equivalent and is not: the
 drill on the Pi (check-clip.py, now in the git history) recorded it broken,
 and this path whole.
+
+--camera-property is the other thing a launch string cannot do safely. The
+camera's properties differ between libcamera builds - sensor-config exists only
+in Raspberry Pi's - and one the element lacks fails the whole parse, so a clip
+records nothing. Each is set on the element named "camera" only if it has it.
 
 Exit codes: 0 the muxer saw EOS and the file is finished, 1 GStreamer reported
 an error, 2 the description did not parse.
@@ -35,11 +41,35 @@ def note(text):
     print(f"record-clip: {text}", file=sys.stderr, flush=True)
 
 
+def set_camera_properties(pipeline, settings):
+    """Set NAME=VALUE on the element named "camera", each only if it exists.
+
+    Gst.util_set_object_arg parses the value as the property's own type - an
+    enum for af-mode, a structure for sensor-config - which is what the
+    launch-string parser did with the same text.
+    """
+    camera = pipeline.get_by_name("camera")
+    if camera is None:
+        note("no element named camera; camera properties not set")
+        return
+    have = {spec.name for spec in camera.list_properties()}
+    for setting in settings:
+        name, _, value = setting.partition("=")
+        if name not in have:
+            note(f"camera: this libcamerasrc has no {name}; recording without it")
+            continue
+        Gst.util_set_object_arg(camera, name, value)
+        note(f"camera: {name} set")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--system-clock", action="store_true",
                         help="pin the pipeline to the system monotonic clock")
+    parser.add_argument("--camera-property", action="append", default=[],
+                        metavar="NAME=VALUE",
+                        help="set on the element named camera if it has it (repeatable)")
     parser.add_argument("pipeline", nargs=argparse.REMAINDER,
                         help="the pipeline, as gst-launch-1.0 would take it, after --")
     options = parser.parse_args()
@@ -50,12 +80,14 @@ def main():
     Gst.init(None)
     try:
         # parse_launchv is what gst-launch itself calls on its argv, so the
-        # daemon's quoting - device="hw:CARD=...", the sensor-config caps -
-        # means here exactly what it meant there.
+        # daemon's quoting - device="hw:CARD=..." - means here exactly what it
+        # meant there.
         pipeline = Gst.parse_launchv(tokens)
     except GLib.Error as error:
         note(f"the pipeline does not parse: {error.message}")
         return 2
+    if options.camera_property:
+        set_camera_properties(pipeline, options.camera_property)
     if options.system_clock:
         pipeline.use_clock(Gst.SystemClock.obtain())
 

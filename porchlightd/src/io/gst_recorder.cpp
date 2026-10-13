@@ -32,19 +32,28 @@ constexpr std::uintmax_t kMinPlausibleBytes = 1024;
 // so it carries 30 with room to spare; the ISP scales it to whatever size the
 // config asks for.
 constexpr const char* kFullFrameSensorMode =
-    "sensor-config=\"sensor/config,width=2304,height=1296,depth=10\"";
+    "sensor-config=sensor/config,width=2304,height=1296,depth=10";
+
+// A Camera Module 3 starts in *manual* focus at lens-position 0, and 0 dioptres
+// is infinity - so an unconfigured camera films the horizon while whoever rang
+// the bell stands a metre away. Continuous is the safe choice while the
+// mounting distance is unknown; a fixed lens-position is better once the camera
+// stops moving, because AF hunts on a static scene.
+constexpr const char* kContinuousFocus = "af-mode=continuous";
+
+// The element record-clip.py looks up to set the two above.
+constexpr const char* kCameraName = "camera";
 
 void add_video(std::vector<std::string>& args, const RecorderConfig& config) {
   const bool camera = config.video_source == "libcamera";
   if (camera) {
     args.push_back("libcamerasrc");
-    // A Camera Module 3 starts in *manual* focus at lens-position 0, and 0
-    // dioptres is infinity - so an unconfigured camera films the horizon while
-    // whoever rang the bell stands a metre away. Continuous is the safe choice
-    // while the mounting distance is unknown; a fixed lens-position is better
-    // once the camera stops moving, because AF hunts on a static scene.
-    args.push_back("af-mode=continuous");
-    args.push_back(kFullFrameSensorMode);
+    // Named, and nothing else: sensor-config exists only in Raspberry Pi's
+    // libcamera, and a property the element lacks fails the whole parse. Both
+    // go to record-clip.py as --camera-property instead, which sets each only
+    // if list_properties() has it - the Buildroot image's upstream libcamera
+    // recorded nothing at all until they moved.
+    args.push_back(std::format("name={}", kCameraName));
   } else {
     args.push_back("videotestsrc");
     args.push_back("is-live=true");
@@ -154,6 +163,10 @@ std::vector<std::string> build_pipeline(const RecorderConfig& config,
   // so the videotestsrc + alsasrc path keeps the clock it was verified with.
   if (config.video_source == "libcamera") {
     args.push_back("--system-clock");
+    for (const char* property : {kContinuousFocus, kFullFrameSensorMode}) {
+      args.push_back("--camera-property");
+      args.push_back(property);
+    }
   }
   args.push_back("--");
 
