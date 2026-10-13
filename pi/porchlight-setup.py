@@ -211,13 +211,26 @@ class Network:
         Must be called before the access point goes up: one radio cannot be an
         access point and scan at the same time, and on this hardware the second
         request simply returns what it last saw, or nothing.
+
+        --rescan yes, not a rescan and a sleep: at boot NetworkManager is still
+        in its own first scan when this runs, and a fixed two seconds read the
+        list before any scan had finished - 0 networks, on an image that boots
+        faster than Raspberry Pi OS. nmcli waits for the scan to complete. An
+        empty list is tried again, because an access point raised with nothing
+        to offer is a dead end for the customer.
         """
-        self._run(["device", "wifi", "rescan"], timeout=30)
-        time.sleep(2)  # nmcli returns before the results land
-        code, out, err = self._run(["-t", "-f", "SSID,SIGNAL,SECURITY",
-                                    "device", "wifi", "list"])
-        if code != 0:
-            note(f"could not scan: {err}")
+        for attempt in range(3):
+            code, out, err = self._run(["-t", "-f", "SSID,SIGNAL,SECURITY",
+                                        "device", "wifi", "list", "--rescan", "yes"],
+                                       timeout=45)
+            if code != 0:
+                note(f"could not scan: {err}")
+            elif out.strip():
+                break
+            else:
+                note(f"scan {attempt + 1} found nothing")
+            time.sleep(3)
+        else:
             return []
         seen = {}
         for row in out.splitlines():
@@ -315,8 +328,28 @@ class Network:
             # The page still works, typed by hand. Not worth stopping for.
             note(f"no captive portal redirect ({error}); the page is at {AP_ADDRESS}")
 
+    def _wait_to_see(self, ssid, attempts=3):
+        """Whether a finished scan shows ssid.
+
+        The access point has only just gone down, and while it was up the radio
+        could not scan, so NetworkManager's list is stale. nmcli's connect looks
+        only at that list and fails at once with "not found" - on a network the
+        page was offered moments earlier.
+        """
+        for _ in range(attempts):
+            code, out, _ = self._run(["-t", "-f", "SSID", "device", "wifi", "list",
+                                      "--rescan", "yes"], timeout=45)
+            if code == 0 and ssid in (row.replace("\\:", ":") for row in out.splitlines()):
+                return True
+            time.sleep(3)
+        return False
+
     def join(self, ssid, psk):
         """Returns None on success, or a cause the page can turn into a sentence."""
+        if not self._wait_to_see(ssid):
+            # Tried anyway: a hidden network never shows in a scan, and nmcli's
+            # own answer is the one the page knows how to explain.
+            note(f"{ssid} did not show in a scan after the access point went down")
         args = ["device", "wifi", "connect", ssid, "ifname", self.interface]
         if psk:
             args += ["password", psk]
@@ -418,6 +451,10 @@ def check_server(base_url, device_id, credential, timeout=20):
         return "credential" if error.code in (401, 403) else "server-error"
     except urllib.error.URLError as error:
         if isinstance(error.reason, ssl.SSLCertVerificationError):
+            # The page gets one word; the journal gets OpenSSL's own reason,
+            # without which "tls" cannot be told from "clock" after the fact.
+            note(f"certificate refused: {error.reason.verify_message} "
+                 f"(code {error.reason.verify_code}), clock {time.strftime('%Y-%m-%d %H:%M:%S')}")
             # Almost always the clock: a Pi has no battery-backed one, and a
             # certificate that is not yet valid reads as a network fault.
             if time.time() < PLAUSIBLE_CLOCK:
