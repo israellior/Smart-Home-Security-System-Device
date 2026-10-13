@@ -4,20 +4,30 @@ A `BR2_EXTERNAL` tree: everything that makes the image *ours* lives here, and
 Buildroot itself stays an untouched download. It builds a Raspberry Pi 4 SD
 card image running systemd and NetworkManager - the two things the doorbell's
 own programs assume, because they were written for Raspberry Pi OS - with Wi-Fi,
-an SSH server, and `porchlightd` in `/usr/bin`. Nothing else of the doorbell is
-in it yet: no config file, none of the Python halves, no `porchlight` user, no
-WM8960 overlay, no camera.
+an SSH server, `porchlightd` and its config and user, and the two programs that
+run before it at every boot: `porchlight-firstboot.py` and
+`porchlight-setup.py`. Not in it yet: `porchlightd` as a running service, the
+other Python halves (bridge, recorder, uploader, call), the WM8960 overlay, the
+camera.
 
-**Status, 2026-10-12:** runs on the Pi. It joined Wi-Fi through `nmcli`, took
-an SSH login with the key below, and started with no failed units.
-`porchlightd --help` runs, which proves the loader finds `libgpiod.so.3`, and
-with no config it stops with `/etc/porchlight/porchlightd.json: cannot be
-opened`, as it should.
+**Status, 2026-10-13:** the device's first-boot path runs on the Pi, against
+production. A birth certificate on the boot partition became `porch-2`;
+setup raised `Porchlight-W6V5`, a phone joined it and chose the home network;
+the Pi joined, and `api.porchl.stream` accepts its credential. Getting there
+found two races in `setup.py` and one gap in the image - see "What the first
+boot found" below.
 
-## Getting in: Wi-Fi once, then SSH
+## Getting in
 
 The image holds no Wi-Fi password, and must not: it is the same for every
-device, and it is on GitHub. On first boot, on the HDMI console, once:
+device, and it is on GitHub. A device is given its network the way a
+customer's is: a birth certificate on the boot partition, then a phone on the
+setup access point (`Porchlight-XXXX`, its password in the certificate) and
+the page at `http://192.168.4.1`. NetworkManager keeps the profile on the card
+and rejoins at every boot.
+
+Without a certificate, or for a quick look, the HDMI console still works -
+once, as root:
 
 ```sh
 nmcli device status                                  # wlan0 must be listed as wifi
@@ -25,20 +35,48 @@ nmcli --ask device wifi connect "<network name>"     # prompts, so it stays out 
 ip addr show wlan0                                   # the address to ssh to
 ```
 
-NetworkManager keeps the profile on the card and rejoins at every boot. Then:
+Then:
 
 ```powershell
 ssh -i $HOME\.ssh\porchlight_ed25519 root@<address>
 ```
+
+Dropbear has no `sftp-server`, so modern `scp` fails with
+`sftp-server: not found`. Copy through a plain session instead:
+`ssh ... root@<address> "cat > /path" < file`. And while the Pi is in setup
+mode it is reachable at `192.168.4.1` from anything that joins its access
+point.
 
 The public half of that key is `rootfs-overlay/root/.ssh/authorized_keys`;
 the private half never leaves the PC it was made on. A reflashed card makes a
 new host key, so SSH will refuse with *REMOTE HOST IDENTIFICATION HAS CHANGED*
 until the old one goes: `ssh-keygen -R <address>`.
 
-**The Wi-Fi country is not set yet**, so the console fills with
-`brcmf_set_channel: setchanspec fail, reason -52` while it scans. It still
-joins. `dmesg -n 3` keeps it off the screen until the next boot.
+## What the first boot found
+
+Each of these passed every test on the build host and failed on the Pi.
+
+- **Setup scanned before any scan had finished.** It asked for a rescan and
+  read the list two seconds later, while NetworkManager was still in its own
+  first scan at boot: 0 networks, on an image that boots faster than
+  Raspberry Pi OS. It now uses `nmcli device wifi list --rescan yes`, which
+  waits, and tries an empty result again.
+- **Setup joined before the radio had looked.** After the access point goes
+  down, NetworkManager's list is stale, and `nmcli device wifi connect` failed
+  at once with "not found" on a network the page had just offered. It now
+  waits for a scan that shows the network.
+- **No CA certificates.** Every HTTPS request would have failed verification;
+  `ca-certificates` is now selected by `porchlight-boot`.
+- **The clock, at first boot.** A fresh card starts at systemd's built-in
+  date, March 2026, which is before the server's certificate was issued.
+  Setup calls a clock before 2025 "clock" and anything later "tls", so the
+  page said *could not be verified*. Not yet fixed; the journal now carries
+  OpenSSL's own reason. The journal is also kept in memory only, so a reboot
+  takes the evidence with it.
+
+The Wi-Fi country is IL, from `rootfs-overlay/etc/modprobe.d/cfg80211.conf`
+and `wireless-regdb`. Without one, every scan asked the chip for Japan-only
+channels and logged `set chanspec ... fail, reason -52` for each.
 
 ## Buildroot version: 2026.02.3
 
@@ -166,16 +204,25 @@ package/porchlightd/    The daemon, built from ../../porchlightd in this repo.
                         Selects libgpiod2, and json-for-modern-cpp so that
                         CMake finds nlohmann/json rather than fetching it from
                         GitHub mid-build. Installs /usr/bin/porchlightd itself,
-                        because CMakeLists.txt has no install() rules.
-board/porchlight/rpi4/  Still unchanged copies of Buildroot's Pi 4 files.
+                        because CMakeLists.txt has no install() rules, and the
+                        example config as /etc/porchlight/porchlightd.json.
+                        Creates the porchlight user and its spool directory.
+package/porchlight-boot/
+                        firstboot and setup from ../../pi, and their two units,
+                        which Buildroot's preset-all enables. Selects Python
+                        with ssl, python-gpiod, dnsmasq and ca-certificates.
+board/porchlight/rpi4/  Copies of Buildroot's Pi 4 files, now ours.
   config.txt            Read by the GPU firmware: kernel, 64-bit, overlays.
   cmdline.txt           The kernel command line: root=/dev/mmcblk0p2.
   post-build.sh         Runs before the root filesystem is packed: the HDMI
                         login prompt, the /boot/firmware line in fstab, and
                         the permissions on /root/.ssh, which a Windows
                         checkout cannot be trusted to carry.
-  rootfs-overlay/       Copied over the root filesystem as it is. So far only
-                        root/.ssh/authorized_keys, a public key.
+  rootfs-overlay/       Copied over the root filesystem, permissions then set
+                        by post-build.sh: root/.ssh/authorized_keys (a public
+                        key), the Wi-Fi country, and NetworkManager's
+                        firewall-backend=none - the setup access point shares
+                        nothing, and there is no nft or iptables to share with.
   post-image.sh         Runs genimage to make sdcard.img.
   genimage.cfg.in       The SD card's partition layout.
   patches/linux/linux.hash

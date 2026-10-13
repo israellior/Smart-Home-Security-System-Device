@@ -1,0 +1,33 @@
+config BR2_PACKAGE_PORCHLIGHT_BOOT
+	bool "porchlight-boot"
+	# Both programs are systemd units, firstboot calls hostnamectl, and
+	# setup drives NetworkManager through nmcli.
+	depends on BR2_INIT_SYSTEMD
+	depends on BR2_PACKAGE_NETWORK_MANAGER
+	# The porchlight user and /etc/porchlight/porchlightd.json come from it.
+	depends on BR2_PACKAGE_PORCHLIGHTD
+	# Repeated from python3, because select does not check them for us.
+	depends on BR2_USE_WCHAR
+	depends on BR2_USE_MMU
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	depends on !BR2_STATIC_LIBS
+	select BR2_PACKAGE_PYTHON3
+	# setup verifies the server over HTTPS, which needs both the TLS module
+	# and the CA certificates to check the server's certificate against.
+	# Without the second, every request fails "certificate verify failed".
+	select BR2_PACKAGE_PYTHON3_SSL
+	select BR2_PACKAGE_CA_CERTIFICATES
+	# The LED during setup. Without it setup still works, with the LED dark.
+	select BR2_PACKAGE_PYTHON_GPIOD
+	# NetworkManager's shared mode runs it to hand the phone an address.
+	select BR2_PACKAGE_DNSMASQ
+	help
+	  The two programs that run before porchlightd at every boot:
+	  porchlight-firstboot.py turns a flashed card into a particular
+	  doorbell from the birth certificate on the boot partition, and
+	  porchlight-setup.py gets it onto a network, raising its own
+	  access point for a phone when it has none.
+
+comment "porchlight-boot needs systemd, NetworkManager and porchlightd"
+	depends on !BR2_INIT_SYSTEMD || !BR2_PACKAGE_NETWORK_MANAGER || \
+		!BR2_PACKAGE_PORCHLIGHTD

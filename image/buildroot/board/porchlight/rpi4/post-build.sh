@@ -24,9 +24,15 @@ grep -q ' /boot/firmware ' "${TARGET_DIR}/etc/fstab" || \
 	echo '/dev/mmcblk0p1 /boot/firmware vfat defaults,noatime,umask=0077 0 0' \
 		>> "${TARGET_DIR}/etc/fstab"
 
-# dropbear ignores authorized_keys if others could have written it. The
-# overlay is copied from a Windows checkout, whose permissions mean nothing,
-# so they are set here rather than trusted.
+# The overlay is copied from a Windows checkout, where every file looks
+# executable to WSL, so its permissions are set here rather than trusted.
+# It holds no programs, so every file in it is 0644.
+OVERLAY="$(dirname "$0")/rootfs-overlay"
+(cd "${OVERLAY}" && find . -type f) | while read -r f; do
+	chmod 0644 "${TARGET_DIR}/${f}"
+done
+
+# dropbear ignores authorized_keys if others could have written it.
 if [ -d "${TARGET_DIR}/root/.ssh" ]; then
 	chmod 700 "${TARGET_DIR}/root/.ssh"
 	chmod 600 "${TARGET_DIR}/root/.ssh/authorized_keys"

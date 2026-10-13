@@ -68,7 +68,7 @@ the viewer is the app rather than a page served from here.
 | — | Provisioning, and a link that comes and goes | **provisioning done 2026-09-26** (`--image --apply`, `--verify` 3 of 3). Reconnecting never drilled on the Pi |
 | — | A device that ships: identity at the factory, wi-fi from a phone | **done 2026-09-26** — porch-2 from a birth certificate, set up from a phone, claimed in the app |
 | — | Clips of the right length | **fixed 2026-09-26** — every clip claimed 204 hours; see "The clock" |
-| — | An image of our own, built with Buildroot | **runs on the Pi 2026-10-12** on branch `product-image` — systemd, NetworkManager, Wi-Fi and SSH with a key. `porchlightd` is a Buildroot package and starts there; no config, user or Python halves yet. See `image/buildroot/README.md` |
+| — | An image of our own, built with Buildroot | **runs on the Pi 2026-10-13** on branch `product-image` — systemd, NetworkManager, SSH by key, and the first-boot path end to end against production: birth certificate, setup access point, a phone, the home Wi-Fi, credential accepted. `porchlightd` is built in but not yet a running service. See `image/buildroot/README.md` |
 
 ### Read this first: what has run on hardware, and what has not
 
@@ -529,16 +529,19 @@ of the pad counters from Step 5.
 ## The machines
 
 **The Pi** — **since 2026-10-12 its card runs our Buildroot image**, not
-Raspberry Pi OS: hostname `porchlight`, at `192.168.0.129` on the home Wi-Fi,
-SSH as `root` with the key `~/.ssh/porchlight_ed25519`, which Claude can use
-too (`ssh -i ~/.ssh/porchlight_ed25519 -o BatchMode=yes root@192.168.0.129`).
-Everything below about Raspberry Pi OS describes **porch-2**, which is that
-card's previous life: backed up whole to
-`C:\Users\israe\Backups\porch-2-2026-10-12.img`, restored with Raspberry Pi
-Imager → *Use custom*. As porch-2 it was provisioned as device `porch-2`
-(`porch-1` is an older record on the server, still claimed), user
-`israellior1`, SSH by password only. Restoring it brings back its old host
-key, so `ssh-keygen -R 192.168.0.129` first.
+Raspberry Pi OS. It is device **`porch-2`** on production
+(`https://api.porchl.stream`), re-minted with `--force` on 2026-10-13 and
+provisioned by firstboot; hostname `porch-2`, at `192.168.0.129` on the home
+Wi-Fi, SSH as `root` with the key `~/.ssh/porchlight_ed25519`, which Claude
+can use too (`ssh -i ~/.ssh/porchlight_ed25519 -o BatchMode=yes
+root@192.168.0.129`). Everything below about Raspberry Pi OS describes the
+card's previous life, backed up whole to
+`C:\Users\israe\Backups\porch-2-2026-10-12.img` and restored with Raspberry Pi
+Imager → *Use custom* - but that backup's credential no longer works, so a
+restored card needs another `--force` mint. As that card: user `israellior1`,
+SSH by password only, and a different host key (`ssh-keygen -R
+192.168.0.129` first). `porch-1` is an older record on the server, still
+claimed.
 
 - Raspberry Pi 4 Model B Rev 1.5, kernel 6.18.50+rpt-rpi-v8 (aarch64), Debian 13 trixie
 - GStreamer 1.26.2. Verified present: `opusenc`/`opusdec`, `alsasrc`/`alsasink`,
