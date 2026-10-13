@@ -27,3 +27,13 @@ dtoverlay=miniuart-bt
 
 # enable 64bits support
 arm_64bit=1
+
+# The Waveshare WM8960 audio HAT: the chime, and later the call's microphone
+# and speaker. Copied from porch-2's working Raspberry Pi OS config. I2C is how
+# the Pi sets the codec's registers, I2S is how the samples travel, and the
+# overlay describes the card so the in-tree drivers bind to it - which makes
+# it a card named wm8960soundcard, the name porchlightd.json uses.
+dtparam=i2c_arm=on
+dtparam=i2s=on
+dtoverlay=i2s-mmap
+dtoverlay=wm8960-soundcard

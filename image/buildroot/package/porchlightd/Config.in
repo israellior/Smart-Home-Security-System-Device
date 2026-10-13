@@ -11,6 +11,15 @@ config BR2_PACKAGE_PORCHLIGHTD
 	# Header-only, but it must be found: otherwise CMake's FetchContent
 	# downloads it from GitHub mid-build, past every hash check.
 	select BR2_PACKAGE_JSON_FOR_MODERN_CPP
+	# The chime backend runs aplay. alsactl restores the WM8960's mixer at
+	# boot (Buildroot enables alsa-restore.service), and amixer is how it
+	# is inspected or put right by hand.
+	depends on BR2_USE_MMU
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	select BR2_PACKAGE_ALSA_UTILS
+	select BR2_PACKAGE_ALSA_UTILS_APLAY
+	select BR2_PACKAGE_ALSA_UTILS_ALSACTL
+	select BR2_PACKAGE_ALSA_UTILS_AMIXER
 	help
 	  The Porchlight doorbell daemon: decides when to chime, alert,
 	  record and start a call, and drives the button, the PIR and

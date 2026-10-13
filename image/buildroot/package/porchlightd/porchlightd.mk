@@ -16,6 +16,9 @@ PORCHLIGHTD_LICENSE = Proprietary
 # it from GitHub mid-build. Depending on it is what keeps that from happening.
 PORCHLIGHTD_DEPENDENCIES = host-pkgconf libgpiod2 json-for-modern-cpp
 
+# The chime is generated at build time, by make-chime.py beside this file.
+PORCHLIGHTD_DEPENDENCIES += host-python3
+
 PORCHLIGHTD_CONF_OPTS = -DPORCHLIGHT_GPIO=ON
 
 # CMakeLists.txt has no install() rules, so cmake --install would put nothing
@@ -32,6 +35,9 @@ define PORCHLIGHTD_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/local/bin/porchlightd
 	$(INSTALL) -D -m 0644 $(@D)/porchlightd.example.json \
 		$(TARGET_DIR)/etc/porchlight/porchlightd.json
+	mkdir -p $(TARGET_DIR)/usr/local/share/porchlight
+	$(HOST_DIR)/bin/python3 $(PORCHLIGHTD_PKGDIR)/make-chime.py \
+		$(TARGET_DIR)/usr/local/share/porchlight/chime.wav
 endef
 
 # Enabled by Buildroot's preset-all, like the boot units. It starts after
