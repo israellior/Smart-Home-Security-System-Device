@@ -6,8 +6,9 @@ card image running systemd and NetworkManager - the two things the doorbell's
 own programs assume, because they were written for Raspberry Pi OS - with Wi-Fi,
 an SSH server, the two programs that run first at every boot
 (`porchlight-firstboot.py`, `porchlight-setup.py`), and `porchlightd` running
-as a service with its WebSocket bridge, the WM8960 chime, and the recorder
-and uploader on the Camera Module 3. Not in it yet: the live call.
+as a service with its WebSocket bridge, the WM8960 chime, the recorder and
+uploader on the Camera Module 3, and the live call through LiveKit - the
+whole doorbell, on an image built from this repo.
 
 **Status, 2026-10-13:** a freshly flashed card does the whole first boot on
 the Pi, against production. A birth certificate on the boot partition became
@@ -17,7 +18,13 @@ one Connect, and 0.3 s after setup finished `porchlightd` started as
 the app shows the doorbell online, and a button press reaches it as a ring.
 Getting there found four faults in `setup.py` and one gap in the image - see
 "What the first boot found" below. A press now chimes from the HAT and records
-a 15 s clip that uploads and confirms.
+a 15 s clip that uploads and confirms, and Watch in the app starts a call:
+30 fps out, the microphone out with echo cancellation on, a viewer's voice
+out of the speaker, and the call ending itself when the viewer leaves.
+
+The LiveKit SDK is LiveKit's own prebuilt aarch64 wheel (`python-livekit`),
+hash-pinned at 1.1.19: its core is Rust, and the wheel's native library needs
+only libc, libm, libdl, libpthread and libgcc_s.
 
 **The camera runs on upstream libcamera, not Raspberry Pi's.** Upstream's
 `libcamerasrc` has no `sensor-config`, so libcamera picks the IMX708's binned
