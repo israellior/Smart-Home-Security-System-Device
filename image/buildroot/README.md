@@ -146,9 +146,10 @@ else; the image holds only its certificate (`package/porchlight-ab/keyring.pem`)
 
 **The system log is on `/data` too** (`/data/journal`, bind-mounted at
 `/var/log/journal`, held to 32 MB), so a boot that went wrong can be read on
-the next good one: `journalctl --list-boots`, then `journalctl -b -1`. Each
-slot has its own machine ID, so after an update the other slot's boots are in
-a different directory: `journalctl -D /var/log/journal/<id>` reads them.
+the next good one: `journalctl --list-boots`, then `journalctl -b -1`. Both
+slots are one machine to it (see the machine ID, below), so the history runs
+straight across updates. A card from before release-4 has one directory per
+slot instead: `journalctl -D /var/log/journal/<id>` reads the others.
 
 **Proven on the Pi, 2026-10-13:** a good bundle installed into the spare slot
 in 25 s, booted, kept the identity, Wi-Fi and credential, and was marked good;
@@ -177,16 +178,72 @@ reachable on a real device:
   `installed.timestamp`, which RAUC never drops.
 
 **Not done, and known:** the image still carries development access (a root
-password hash and an SSH key), bundles are signed with a development key
-kept in WSL, and each slot has its own machine ID (above), which splits the
-log. A product needs all three answered: no shell access, a signing key that
-lives somewhere guarded, and one machine ID per device - given to the kernel
-from U-Boot, since systemd reads it before `/data` is mounted.
+password hash and an SSH key), and bundles are signed with a development key
+kept in WSL. A product needs both answered: no shell access, and a signing
+key that lives somewhere guarded.
 
 **A bundle updates the slots only.** The boot partition is shared by both
 and nothing updates it after the factory: a change to `config.txt`,
 `cmdline.txt`, `boot.scr`, U-Boot or the firmware needs a reflash, or an
 update step of its own that does not exist yet.
+
+## A read-only system slot
+
+**From release-4 (2026-10-14).** The slot mounts `ro` and stays exactly as
+the bundle wrote it, so a power cut has nothing on it to damage. What is
+written goes to RAM, gone at reboot, or to `/data`, kept:
+
+| Where | What |
+|---|---|
+| `/var` | A tmpfs, filled at every boot from the image's copy in `/usr/share/factory/var` - Buildroot's "var factory", which is what `# BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW is not set` brings. Packages' state, the clip spool (`porchlightd.service` creates it, since nothing made at install time survives) |
+| `/data/journal` | The log, bind-mounted at `/var/log/journal`, synced every 30 s |
+| `/data/timesync` | timesyncd's clock file, bind-mounted at `/var/lib/systemd/timesync`: a reboot starts at the right date, not at the build's |
+| `uboot.env` | The machine ID (below), beside the slot counters |
+
+To change a file by hand for a test: `mount -o remount,rw /`, edit,
+`mount -o remount,ro /`. The next update replaces it anyway.
+
+**The machine ID.** systemd names the journal's directory after it, and on a
+read-only `/etc` it cannot save one, so it makes up a new one every boot -
+and `journalctl -b -1` would find nothing. The first boot's is saved in
+`uboot.env` by `porchlight-data` (`fw_setenv machine_id`), and `boot.cmd`
+passes it back as `systemd.machine_id=`. Every later boot, in either slot, is
+the same machine, and the first boot's log is already filed under that ID.
+
+**The hostname** is set from `/data/porchlight/identity.json` at every boot
+by `porchlight-data`, writing nothing. `/etc/hostname` says `porchlight`,
+read-only, so NetworkManager has `hostname-mode=none`: by default it put that
+name back whenever Wi-Fi came up. firstboot sets the name for its own boot.
+
+**What the drills found**, each fixed:
+
+- **No update could install.** RAUC mounts a bundle under `/mnt/rauc`, on the
+  read-only root. `mount-prefix=/run/rauc` now - but release-4 shipped
+  without it, so a device on release-4 updates only with
+  `rauc --mount=/run/rauc install …`. A release that runs is not a release
+  that can be left: test the update *from* every release, not just the
+  release.
+- **A power cut lost the last five minutes of log**, journald's default
+  sync interval - including the button press the cut was timed against.
+  `SyncIntervalSec=30s`.
+- **"fsck failed" at every boot.** The root had fsck pass 1 and the image has
+  no `fsck.ext4`; a read-only root needs no check. Pass 0.
+
+**Proven on the Pi, 2026-10-14**, from a flashed release-4 card: setup from a
+phone, root `ro`, no failed units; a reboot kept the machine ID and
+`journalctl -b -1` read the boot before; the power pulled during a recording,
+and the same slot booted, `/data` replayed its journal and kept the
+credential and Wi-Fi; release-6 installed into B, which came up as porch-2
+with the same machine ID, on trial and then good.
+
+**Next, and the weakest point now: the boot partition.** It is FAT, shared by
+both slots, and `uboot.env` on it is rewritten by U-Boot at every boot and by
+RAUC at every mark-good. A power cut inside one of those writes leaves no slot
+bootable, and neither A/B nor a read-only root protects it - the drill's
+`FAT-fs (mmcblk0p1): Volume was not properly unmounted` was harmless, but it
+was this. The usual answer is U-Boot's redundant environment: two copies in
+raw sectors outside any filesystem, written alternately, so a torn write
+leaves the other copy good.
 
 **What the first boot on the Pi found** (2026-10-13), each fixed on the card
 by hand, then here:
@@ -387,9 +444,10 @@ board/porchlight/rpi4/  Copies of Buildroot's Pi 4 files, now ours.
                         key), the Wi-Fi country, NetworkManager's
                         firewall-backend=none - the setup access point shares
                         nothing, and there is no nft or iptables to share with
-                        - systemd-resolved without DNSSEC, the mixer state,
-                        and the udev rules that give /dev/gpiochip* to gpio
-                        and /dev/dma_heap to video.
+                        - and its hostname-mode=none, setup's captive-portal
+                        file, systemd-resolved without DNSSEC, the mixer
+                        state, and the udev rules that give /dev/gpiochip* to
+                        gpio and /dev/dma_heap to video.
   post-image.sh         Runs genimage to make sdcard.img, with boot.scr.
   genimage.cfg.in       The SD card: boot, slot A, slot B, data.
   patches/*/*.hash      SHA-256 of the kernel and U-Boot tarballs. Downloads
