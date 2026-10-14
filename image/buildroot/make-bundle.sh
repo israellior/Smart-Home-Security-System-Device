@@ -48,4 +48,19 @@ OUT="$IMAGES/porchlight-$VERSION.raucb"
 rm -f "$OUT"
 rauc bundle --cert="$KEYS/dev.cert.pem" --key="$KEYS/dev.key.pem" "$WORK" "$OUT"
 rauc info --keyring="$KEYS/dev.cert.pem" "$OUT"
+
+# The system.conf inside the image, loaded by this host's RAUC, which is the
+# same version. Release-6 shipped a key RAUC rejects, and a device on it
+# could neither install an update nor mark itself good - which nothing short
+# of a Pi showed. Only data-directory is changed: /data is the device's.
+debugfs -R "dump /etc/rauc/system.conf $WORK/system.conf" "$ROOTFS" 2>/dev/null
+[ -s "$WORK/system.conf" ] || { echo "make-bundle: no /etc/rauc/system.conf in $ROOTFS" >&2; exit 1; }
+sed -i "s|^data-directory=.*|data-directory=$WORK/data|" "$WORK/system.conf"
+if ! rauc --conf="$WORK/system.conf" --keyring="$KEYS/dev.cert.pem" info "$OUT" >/dev/null 2>"$WORK/conf.err"; then
+	echo "make-bundle: RAUC refuses this image's system.conf - a device on it could not update:" >&2
+	cat "$WORK/conf.err" >&2
+	rm -f "$OUT"
+	exit 1
+fi
+echo "make-bundle: RAUC accepts the image's system.conf"
 ls -lh "$OUT"

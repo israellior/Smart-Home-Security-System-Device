@@ -61,8 +61,10 @@ if [ "$installed" = unknown ]; then
 elif [ -n "$installed" ] && [ "$(cat "$proven" 2>/dev/null)" != "$installed" ]; then
 	trial=yes
 	echo "porchlight-health: slot $SLOT is on trial (install $installed)"
+elif [ -n "$installed" ]; then
+	echo "porchlight-health: slot $SLOT is proven (install $installed)"
 else
-	echo "porchlight-health: slot $SLOT is ${installed:+proven (install $installed)}${installed:-the factory system}"
+	echo "porchlight-health: slot $SLOT is the factory system"
 fi
 
 # Whole seconds, in the shell's own 64-bit arithmetic. Not awk: BusyBox awk's
@@ -76,7 +78,16 @@ while [ $(( $(uptime_s) - start )) -lt $DEADLINE_SECONDS ]; do
 	if [ "$(systemctl is-active porchlightd)" = active ]; then
 		since=$(( $(systemctl show -p ActiveEnterTimestampMonotonic --value porchlightd) / 1000000 ))
 		if [ $(( $(uptime_s) - since )) -ge $STEADY_SECONDS ]; then
-			rauc status mark-good >/dev/null
+			# RAUC's answer is believed, not assumed. Release-6 had a key RAUC
+			# rejected, so mark-good failed at every boot while this printed
+			# "marked good" - and the attempts ran down unseen. A failure here
+			# fails the unit, where `systemctl --failed` shows it; the counter
+			# running out then falls back to the other slot, which is right
+			# for a system whose updater cannot work.
+			if ! rauc status mark-good >/dev/null; then
+				echo "porchlight-health: porchlightd is steady, but RAUC could not mark slot $SLOT good"
+				exit 1
+			fi
 			[ "$trial" = yes ] && echo "$installed" > "$proven"
 			echo "porchlight-health: porchlightd steady for ${STEADY_SECONDS}s; slot $SLOT marked good"
 			exit 0
@@ -87,7 +98,10 @@ done
 
 if [ "$trial" = yes ]; then
 	echo "porchlight-health: porchlightd never ran ${STEADY_SECONDS}s steadily; slot $SLOT is bad, falling back"
-	rauc status mark-bad >/dev/null
+	# Reboot either way: if RAUC cannot mark it bad, the reboot still spends
+	# one of its attempts, and U-Boot falls back when they run out.
+	rauc status mark-bad >/dev/null || \
+		echo "porchlight-health: RAUC could not mark slot $SLOT bad; rebooting to spend its attempts"
 	systemctl reboot
 else
 	echo "porchlight-health: porchlightd is not steady, but slot $SLOT has proven itself before; not rolling back"
