@@ -64,13 +64,17 @@ else
 	echo "porchlight-health: slot $SLOT is ${installed:+proven (install $installed)}${installed:-the factory system}"
 fi
 
-uptime_us() { awk '{ printf "%d", $1 * 1000000 }' /proc/uptime; }
+# Whole seconds, in the shell's own 64-bit arithmetic. Not awk: BusyBox awk's
+# printf "%d" is 32-bit, so uptime in microseconds stuck at 2147483647 after
+# 35.8 minutes - and a boot whose phone setup took longer than that never
+# reached its deadline and never marked the slot good.
+uptime_s() { cut -d. -f1 /proc/uptime; }
 
-start=$(uptime_us)
-while [ $(( $(uptime_us) - start )) -lt $(( DEADLINE_SECONDS * 1000000 )) ]; do
+start=$(uptime_s)
+while [ $(( $(uptime_s) - start )) -lt $DEADLINE_SECONDS ]; do
 	if [ "$(systemctl is-active porchlightd)" = active ]; then
-		since=$(systemctl show -p ActiveEnterTimestampMonotonic --value porchlightd)
-		if [ $(( $(uptime_us) - since )) -ge $(( STEADY_SECONDS * 1000000 )) ]; then
+		since=$(( $(systemctl show -p ActiveEnterTimestampMonotonic --value porchlightd) / 1000000 ))
+		if [ $(( $(uptime_s) - since )) -ge $STEADY_SECONDS ]; then
 			rauc status mark-good >/dev/null
 			[ "$trial" = yes ] && echo "$installed" > "$proven"
 			echo "porchlight-health: porchlightd steady for ${STEADY_SECONDS}s; slot $SLOT marked good"
