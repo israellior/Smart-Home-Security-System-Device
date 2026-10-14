@@ -89,6 +89,13 @@ Each of these passed every test on the build host and failed on the Pi.
   setup called anything after 2025 "tls" - *could not be verified*. Setup now
   waits for timesyncd's `/run/systemd/timesync/synchronized` before the HTTPS
   check (about 20 s on the Pi), and OpenSSL's codes 9 and 10 read as "clock".
+- **DNSSEC, with that clock.** On the release card (2026-10-14) every Connect
+  failed as `no-dns`: systemd-resolved validated DNSSEC, and with the clock in
+  March every signature read `signature-expired` - and the clock could never
+  be set, because timesyncd needs DNS to find an NTP server. Earlier cards got
+  lucky with which answers were validated. `rootfs-overlay/etc/systemd/
+  resolved.conf.d/porchlight.conf` turns validation off; TLS already proves
+  the server's name, and setup waits for the clock before that check.
 - **The access point's channel.** NetworkManager chose 6 one boot and 11 the
   next; on 11 the access point came and went every two minutes and a phone
   beside the Pi could not join. Setup pins channel 6.
@@ -101,8 +108,7 @@ Each of these passed every test on the build host and failed on the Pi.
 With all of them, on 2026-10-13: one Connect, 41 s to "joined SGisrael and
 reached the app server".
 
-Still open: the journal is kept in memory only, so a reboot takes the
-evidence with it, and after the access point goes down the Wi-Fi country
+Still open: after the access point goes down the Wi-Fi country
 briefly resets to the world domain - the `set chanspec ... fail` burst in
 `dmesg` is that, and it is noise rather than a fault.
 
@@ -152,6 +158,30 @@ rollback attempt did not roll back - see `porchlight-health`: it trusted
 `rauc status --output-format=json`, which this RAUC cannot produce, and an
 empty answer meant "proven". It reads RAUC's status file now, and treats
 anything it cannot read as on trial.
+
+**Proven again from a freshly flashed release card, 2026-10-14**: birth
+certificate, phone setup, a press (chime, ring, a clip uploaded), Watch both
+ways; then release-2 into B, kept porch-2 and came up on trial and good; then
+a broken release-2 into A, which was on trial, marked bad at 318 s, and the
+Pi was back on B at 06:18 with nobody touching it; then release-3 into A,
+good, with B still proven. Two more faults in `porchlight-health`, both only
+reachable on a real device:
+
+- **BusyBox awk's `printf "%d"` is 32-bit.** Uptime in microseconds stuck at
+  2147483647 after 35.8 minutes, so a boot whose phone setup took longer
+  than that never ended its 60 s wait or its deadline, and the slot was never
+  marked good. It counts whole seconds in the shell now, which is 64-bit.
+- **RAUC keeps `installed.transaction` only for the latest install.**
+  Installing into A deleted B's, so B - already proven - came back on trial,
+  where a struggling daemon would roll it back. Installs are judged by
+  `installed.timestamp`, which RAUC never drops.
+
+**Not done, and known:** the image still carries development access (a root
+password hash and an SSH key), bundles are signed with a development key
+kept in WSL, and each slot has its own machine ID (above), which splits the
+log. A product needs all three answered: no shell access, a signing key that
+lives somewhere guarded, and one machine ID per device - given to the kernel
+from U-Boot, since systemd reads it before `/data` is mounted.
 
 **A bundle updates the slots only.** The boot partition is shared by both
 and nothing updates it after the factory: a change to `config.txt`,
@@ -325,24 +355,43 @@ package/porchlight-boot/
                         and the two boot units, which preset-all enables.
                         Selects Python with ssl, python-gpiod,
                         python-websocket-client, dnsmasq and ca-certificates.
+package/porchlight-recorder/
+                        record-clip.py and upload-clip.py, and the GStreamer
+                        and libcamera pieces a clip needs.
+package/python-livekit/ The LiveKit SDK from its prebuilt aarch64 wheel: its
+                        FFI library is Rust, and the wheel is what upstream
+                        ships, checked by hash.
+package/porchlight-call/
+                        webrtc-video.py, the elements the call adds, and the
+                        /opt/porchlight/venv/bin/python3 the daemon's config
+                        names, as a link to the system Python.
+package/porchlight-ab/  A/B: RAUC's system.conf and keyring, fw_env.config for
+                        uboot.env, the hardware watchdog, the journal on /data,
+                        NetworkManager's profiles on /data, porchlight-data
+                        (prepares /data before anything reads it) and
+                        porchlight-health (the 60 s verdict).
+make-bundle.sh          A signed update bundle from the built root filesystem.
 board/porchlight/rpi4/  Copies of Buildroot's Pi 4 files, now ours.
-  config.txt            Read by the GPU firmware: kernel, 64-bit, overlays.
-  cmdline.txt           The kernel command line: root=/dev/mmcblk0p2.
+  config.txt            Read by the GPU firmware: U-Boot, 64-bit, overlays.
+  cmdline.txt           The firmware's half of the kernel command line;
+                        boot.cmd adds root=, rauc.slot= and panic=.
+  boot.cmd              U-Boot's script: choose a slot, spend an attempt,
+                        boot it, and reset if it does not.
   post-build.sh         Runs before the root filesystem is packed: the HDMI
-                        login prompt, the /boot/firmware line in fstab, and
-                        the permissions on /root/.ssh, which a Windows
-                        checkout cannot be trusted to carry.
+                        login prompt, fstab for /boot/firmware and /data, the
+                        links that put /etc/porchlight and dropbear's keys on
+                        /data, and permissions a Windows checkout cannot be
+                        trusted to carry.
   rootfs-overlay/       Copied over the root filesystem, permissions then set
                         by post-build.sh: root/.ssh/authorized_keys (a public
                         key), the Wi-Fi country, NetworkManager's
                         firewall-backend=none - the setup access point shares
                         nothing, and there is no nft or iptables to share with
-                        - and the udev rule that gives /dev/gpiochip* to the
-                        gpio group, without which porchlightd cannot open the
-                        button, the PIR or the LED.
-  post-image.sh         Runs genimage to make sdcard.img.
-  genimage.cfg.in       The SD card's partition layout.
-  patches/linux/linux.hash
-                        SHA-256 of the kernel tarball. Downloads are refused
-                        without a matching hash, so a new kernel needs a new one.
+                        - systemd-resolved without DNSSEC, the mixer state,
+                        and the udev rules that give /dev/gpiochip* to gpio
+                        and /dev/dma_heap to video.
+  post-image.sh         Runs genimage to make sdcard.img, with boot.scr.
+  genimage.cfg.in       The SD card: boot, slot A, slot B, data.
+  patches/*/*.hash      SHA-256 of the kernel and U-Boot tarballs. Downloads
+                        are refused without a matching hash.
 ```

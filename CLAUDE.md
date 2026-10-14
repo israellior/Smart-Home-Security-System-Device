@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Working notes for this project. Read this first; update it at the end of any session
-that changes something here. Last updated 2026-10-12.
+that changes something here. Last updated 2026-10-14.
 
 **Also read [DESIGN.md](DESIGN.md)** and
 [docs/server-brief.md](docs/server-brief.md). This file describes the present.
@@ -69,6 +69,7 @@ the viewer is the app rather than a page served from here.
 | — | A device that ships: identity at the factory, wi-fi from a phone | **done 2026-09-26** — porch-2 from a birth certificate, set up from a phone, claimed in the app |
 | — | Clips of the right length | **fixed 2026-09-26** — every clip claimed 204 hours; see "The clock" |
 | — | An image of our own, built with Buildroot | **runs on the Pi 2026-10-13** on branch `product-image` — from a freshly flashed card: birth certificate, setup access point, one Connect from a phone, then `porchlightd` as a service with GPIO and its bridge; porch-2 online in the app; a press chimes, rings, and records a 15 s clip that uploads; Watch starts a call both ways and it ends itself. Upstream libcamera, so the narrower binned sensor mode. See `image/buildroot/README.md` |
+| — | A/B updates: U-Boot chooses a slot, RAUC writes the other | **runs on the Pi 2026-10-14** from a freshly flashed release card: a signed bundle into the spare slot keeps the identity and is marked good after 60 s steady; a broken one is marked bad at 318 s and the Pi falls back on its own. The boot partition is not updated by bundles, and the image still has development access and a development signing key |
 
 ### Read this first: what has run on hardware, and what has not
 
@@ -981,8 +982,10 @@ image/buildroot/        A BR2_EXTERNAL tree for Buildroot 2026.02.3: our Pi 4
                         defconfig and board files, so the SD card image builds
                         from this repo. Its README is the build host setup -
                         WSL, a clean PATH, and a symlink because this repo's
-                        path has spaces. The first step from provision.sh
-                        towards a factory image.
+                        path has spaces. The factory image that replaces
+                        provision.sh: four partitions (boot, slot A, slot B,
+                        /data), U-Boot and RAUC for updates, make-bundle.sh
+                        to sign one. The signing key is never in this repo.
 pi/check-livekit.sh     Read-only check of the call: the venv and the SDK, the GStreamer
                         elements, the credential and what the two tokens grant,
                         and whether anything else holds the camera or the card.
