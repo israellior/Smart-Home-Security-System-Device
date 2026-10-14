@@ -228,13 +228,38 @@ name back whenever Wi-Fi came up. firstboot sets the name for its own boot.
   `SyncIntervalSec=30s`.
 - **"fsck failed" at every boot.** The root had fsck pass 1 and the image has
   no `fsck.ext4`; a read-only root needs no check. Pass 0.
+- **The fix for the first one was spelled wrong, and nothing said so.**
+  Release-6 had `mount-prefix=`; RAUC's key is `mountprefix=`, unlike the
+  keys around it, and RAUC refused the whole file: no install, no status, no
+  mark-good. `porchlight-health` threw mark-good's exit code away and printed
+  "marked good", so slot B's attempts ran 3, 2, 1 with every boot looking
+  healthy. Now a failed mark-good fails the unit, and `make-bundle.sh` loads
+  the image's own `system.conf` with the host's RAUC and leaves no bundle if
+  RAUC refuses it - proven against release-6's root filesystem. The check
+  that had passed release-6 read the line in the file; only the program
+  reading it could say whether it was right.
+- **Every SSH login took eight seconds.** dropbear reverse-resolves each
+  client, and systemd-resolved sent that out over mDNS and waited 7.6 s for
+  an answer nobody gives; scripts with a 4 s connect timeout read it as a
+  dead Pi. mDNS and LLMNR are off (`resolved.conf.d/porchlight.conf`);
+  logins take under a second. `porch-2.local` no longer resolves - use the
+  address.
 
 **Proven on the Pi, 2026-10-14**, from a flashed release-4 card: setup from a
 phone, root `ro`, no failed units; a reboot kept the machine ID and
 `journalctl -b -1` read the boot before; the power pulled during a recording,
 and the same slot booted, `/data` replayed its journal and kept the
 credential and Wi-Fi; release-6 installed into B, which came up as porch-2
-with the same machine ID, on trial and then good.
+with the same machine ID, on trial and then good - except that "good" was
+the bug above; release-7 into A was marked good with RAUC's own word for it
+and `BOOT_A_LEFT=3` to show.
+
+**The hardware watchdog, proven the same day.** `kernel.panic=0`, so a
+crashed kernel never reboots itself, then `echo c > /proc/sysrq-trigger`:
+the Pi stopped answering at +4 s and answered again at +32 s, reset by the
+BCM2835's watchdog because systemd (`RuntimeWatchdogSec=30s`) had stopped
+feeding it. Without one, a doorbell that hangs stays hung until someone
+pulls its plug.
 
 **Next, and the weakest point now: the boot partition.** It is FAT, shared by
 both slots, and `uboot.env` on it is rewritten by U-Boot at every boot and by
