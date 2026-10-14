@@ -15,6 +15,11 @@ elif [ -d ${TARGET_DIR}/etc/systemd ]; then
        "${TARGET_DIR}/etc/systemd/system/getty.target.wants/getty@tty1.service"
 fi
 
+# The root is read-only, so nothing can leave it needing a check, and the
+# image has no fsck.ext4 to check it with: pass 1 only made every boot log
+# "fsck failed". Pass 0.
+sed -i 's|^\(/dev/root / auto ro 0\) 1$|\1 0|' "${TARGET_DIR}/etc/fstab"
+
 # The FAT boot partition, mounted where Raspberry Pi OS mounts it, because
 # that is where porchlight-firstboot.py looks for the birth certificate.
 # umask=0077: the certificate holds the credential until firstboot moves it.
