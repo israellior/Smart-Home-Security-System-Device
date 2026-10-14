@@ -24,10 +24,15 @@ sed -i 's|^\(/dev/root / auto ro 0\) 1$|\1 0|' "${TARGET_DIR}/etc/fstab"
 # that is where porchlight-firstboot.py looks for the birth certificate.
 # umask=0077: the certificate holds the credential until firstboot moves it.
 # Pass 0, not 2: there is no fsck.vfat in the image to check it with.
+# Read-only: both slots boot from it, and nothing needs to write it any more -
+# U-Boot's environment is in raw sectors now. firstboot alone makes it
+# writable, for as long as it takes to destroy a birth certificate (its unit's
+# drop-in, package porchlight-ab). The line is replaced rather than kept, so
+# a tree built before this gets the new options.
 mkdir -p "${TARGET_DIR}/boot/firmware"
-grep -q ' /boot/firmware ' "${TARGET_DIR}/etc/fstab" || \
-	echo '/dev/mmcblk0p1 /boot/firmware vfat defaults,noatime,umask=0077 0 0' \
-		>> "${TARGET_DIR}/etc/fstab"
+sed -i '\| /boot/firmware |d' "${TARGET_DIR}/etc/fstab"
+echo '/dev/mmcblk0p1 /boot/firmware vfat ro,noatime,umask=0077 0 0' \
+	>> "${TARGET_DIR}/etc/fstab"
 
 # The overlay is copied from a Windows checkout, where every file looks
 # executable to WSL, so its permissions are set here rather than trusted.

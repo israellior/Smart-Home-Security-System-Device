@@ -41,8 +41,9 @@ fi
 # would land in a new directory and `journalctl -b -1` would find nothing.
 # U-Boot passes the saved one as systemd.machine_id= (boot.cmd); the first
 # boot has none, so the one systemd made up for it is saved, and that boot's
-# log is already under the ID every later boot uses. uboot.env is on the FAT
-# partition, beside the slot counters: an update replaces a slot, not this.
+# log is already under the ID every later boot uses. U-Boot's environment is
+# in raw sectors before the partitions, beside the slot counters: an update
+# replaces a slot, not this.
 mid=$(cat /etc/machine-id 2>/dev/null || true)
 if [ ${#mid} -eq 32 ] && [ -z "$(echo "$mid" | tr -d 0-9a-f)" ] && \
    [ "$(fw_printenv -n machine_id 2>/dev/null)" != "$mid" ]; then

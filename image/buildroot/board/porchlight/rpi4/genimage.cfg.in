@@ -1,12 +1,20 @@
 # The card, A/B:
 #
-#   p1 boot    FAT     firmware, U-Boot, boot.scr, device trees, uboot.env
+#   1 MiB      raw     U-Boot's environment, first copy
+#   2 MiB      raw     U-Boot's environment, second copy (uboot.fragment)
+#   p1 boot    FAT     firmware, U-Boot, boot.scr, device trees - read-only
 #   p2 slot A  ext4    a whole system: root filesystem with its own kernel
 #   p3 slot B  ext4    the same, the spare that an update is written into
 #   p4 data    ext4    this device's own files, which every update leaves alone
 #
 # Both slots start as the same image, so either can boot from the first day.
-# MBR allows four primary partitions, which is exactly this.
+# MBR allows four primary partitions, which is exactly this - so the
+# environment cannot have one, and lives in the gap before p1.
+#
+# Every partition starts on a 4 MiB boundary. SD cards erase in blocks of
+# about that size, and a partition that straddles them makes the card do
+# more work, and more wear, for each write. Before this p1 began at sector 1,
+# leaving no room for anything, and p2 to p4 at odd sectors.
 
 image boot.vfat {
 	vfat {
@@ -29,6 +37,7 @@ image data.ext4 {
 
 image sdcard.img {
 	hdimage {
+		align = 4M
 	}
 
 	partition boot {

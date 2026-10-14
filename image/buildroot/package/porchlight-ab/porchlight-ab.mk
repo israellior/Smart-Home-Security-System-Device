@@ -22,6 +22,8 @@ define PORCHLIGHT_AB_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/etc/systemd/journald.conf.d/porchlight.conf
 	$(INSTALL) -D -m 0644 $(@D)/journal-flush-data.conf \
 		$(TARGET_DIR)/usr/lib/systemd/system/systemd-journal-flush.service.d/porchlight-data.conf
+	$(INSTALL) -D -m 0644 $(@D)/firstboot-boot-rw.conf \
+		$(TARGET_DIR)/usr/lib/systemd/system/porchlight-firstboot.service.d/boot-rw.conf
 	$(INSTALL) -D -m 0755 $(@D)/porchlight-data \
 		$(TARGET_DIR)/usr/libexec/porchlight/porchlight-data
 	$(INSTALL) -D -m 0755 $(@D)/porchlight-health \

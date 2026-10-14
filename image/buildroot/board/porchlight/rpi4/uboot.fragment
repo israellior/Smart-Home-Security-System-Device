@@ -1,0 +1,21 @@
+# U-Boot's environment - the slot counters, BOOT_ORDER, the machine ID - in
+# two copies in raw sectors of the card, not in uboot.env on the FAT.
+#
+# Written at every boot by U-Boot (saveenv in boot.cmd) and at every mark-good
+# by RAUC. In a file, a power cut inside that write could take the FAT with
+# it, and the FAT is shared by both slots: no slot would boot. Here each save
+# goes to the older copy with a higher counter, so a torn write leaves the
+# other copy whole and its checksum good, and that one is used.
+#
+# 1 MiB and 2 MiB: before the first partition, which genimage.cfg.in starts
+# at 4 MiB, and in different erase blocks of the card, so one erase never
+# touches both. /etc/fw_env.config (package porchlight-ab) names the same two
+# places for fw_setenv in Linux.
+# CONFIG_ENV_IS_IN_FAT is not set
+CONFIG_ENV_IS_IN_MMC=y
+CONFIG_SYS_REDUNDAND_ENVIRONMENT=y
+CONFIG_ENV_SIZE=0x4000
+CONFIG_ENV_OFFSET=0x100000
+CONFIG_ENV_OFFSET_REDUND=0x200000
+CONFIG_SYS_MMC_ENV_DEV=0
+CONFIG_SYS_MMC_ENV_PART=0
