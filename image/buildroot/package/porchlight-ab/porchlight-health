@@ -46,9 +46,10 @@ except (OSError, configparser.Error):
 if not status.has_section(section):
     print("")
 else:
-    # The transaction is unique per install; the timestamp is the fallback.
-    s = status[section]
-    print(s.get("installed.transaction") or s.get("installed.timestamp") or "unknown")
+    # The timestamp, not installed.transaction: RAUC keeps the transaction only
+    # for the latest install, so an update to the other slot deleted it, and a
+    # proven slot came back "on trial" - rollback-able - after every update.
+    print(status[section].get("installed.timestamp") or "unknown")
 EOF
 ) || installed=unknown
 
