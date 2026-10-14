@@ -33,8 +33,11 @@ User=porchlight
 # The sound card, the camera and the GPIO lines.
 SupplementaryGroups=audio video gpio
 
-# Creates and owns /var/lib/porchlight, which holds the clip spool.
-StateDirectory=porchlight
+# Creates and owns /var/lib/porchlight and the clip spool in it, at every
+# start. On the Buildroot image /var is a tmpfs that starts empty, so a spool
+# made once at install time would not be there.
+StateDirectory=porchlight porchlight/spool
+StateDirectoryMode=0750
 
 # GStreamer caches its plugin list in ~/.cache, and the porchlight user has no
 # home, so without this every clip rescanned every plugin before the camera

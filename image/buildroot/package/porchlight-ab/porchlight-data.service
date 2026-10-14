@@ -1,10 +1,14 @@
 [Unit]
 Description=Porchlight data partition: this device's own files
-# /data is mounted by local-fs.target. Everything that keeps files there waits
-# for this: firstboot writes the identity, NetworkManager reads the Wi-Fi
-# profiles, dropbear its host keys.
+# /data and the /var tmpfs are mounted by local-fs.target. Everything that
+# keeps files on /data waits for this: firstboot writes the identity,
+# NetworkManager reads the Wi-Fi profiles, dropbear its host keys, timesyncd
+# its clock file. And systemd-tmpfiles-setup, which fills /var from the image's
+# copy, comes after it, so it fills around the bind mounts rather than under
+# them.
 After=local-fs.target
 Before=porchlight-firstboot.service NetworkManager.service dropbear.service
+Before=systemd-timesyncd.service systemd-tmpfiles-setup.service
 DefaultDependencies=no
 
 [Service]

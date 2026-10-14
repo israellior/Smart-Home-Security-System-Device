@@ -62,6 +62,13 @@ fdt addr ${dtb}
 fdt get value fw_bootargs /chosen bootargs
 setenv bootargs "${fw_bootargs} root=/dev/mmcblk0p${part} rootwait rauc.slot=${slot} panic=10"
 
+# The root is read-only, so systemd cannot keep a machine ID in /etc, and the
+# journal on /data is filed by it. porchlight-data saves the first boot's ID
+# here; from then on every boot, in either slot, is the same machine.
+if test -n "${machine_id}"; then
+  setenv bootargs "${bootargs} systemd.machine_id=${machine_id}"
+fi
+
 # Each slot carries its own kernel in /boot, so an update replaces kernel and
 # system together.
 load mmc 0:${part} ${kernel_addr_r} /boot/Image

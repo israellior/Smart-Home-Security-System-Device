@@ -340,14 +340,25 @@ class Network:
         self._run(["connection", "down", AP_CONNECTION])
 
     def _write_dnsmasq(self):
+        path = os.path.join(DNSMASQ_DIR, DNSMASQ_FILE)
+        wanted = f"address=/#/{AP_ADDRESS}\n"
+        try:
+            # The Buildroot image ships this file, on a read-only /etc. Only
+            # what is missing or different is written, so there is nothing to
+            # write - and nothing to fail - where it is already right.
+            with open(path) as handle:
+                if wanted in handle.read().splitlines(keepends=True):
+                    return
+        except OSError:
+            pass
         try:
             os.makedirs(DNSMASQ_DIR, exist_ok=True)
-            with open(os.path.join(DNSMASQ_DIR, DNSMASQ_FILE), "w") as handle:
+            with open(path, "w") as handle:
                 handle.write(
                     "# Written by porchlight-setup.py. Sends every name to the\n"
                     "# device itself, which is what makes the setup page open by\n"
                     "# itself instead of the customer being told an IP address.\n"
-                    f"address=/#/{AP_ADDRESS}\n")
+                    + wanted)
         except OSError as error:
             # The page still works, typed by hand. Not worth stopping for.
             note(f"no captive portal redirect ({error}); the page is at {AP_ADDRESS}")

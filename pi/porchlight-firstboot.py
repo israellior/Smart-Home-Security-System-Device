@@ -201,8 +201,15 @@ class Firstboot:
             subprocess.run(["hostnamectl", "set-hostname", device_id], check=True,
                            capture_output=True)
         except (OSError, subprocess.CalledProcessError) as error:
-            # Not fatal. A doorbell with the wrong hostname is a doorbell.
-            note(f"could not set the hostname: {error}")
+            # The Buildroot image's /etc is read-only, so the name cannot be
+            # kept there; porchlight-data sets it from identity.json at every
+            # boot. This boot is the one that has to be told.
+            try:
+                subprocess.run(["hostname", device_id], check=True, capture_output=True)
+                note(f"hostname {device_id} for this boot only; /etc cannot keep it")
+            except (OSError, subprocess.CalledProcessError):
+                # Not fatal. A doorbell with the wrong hostname is a doorbell.
+                note(f"could not set the hostname: {error}")
             return
         # hostnamectl does not touch /etc/hosts, and Debian resolves its own
         # name through the 127.0.1.1 line there. Left stale, every sudo on the

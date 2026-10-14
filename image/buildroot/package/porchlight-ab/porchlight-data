@@ -26,22 +26,48 @@ if ! grep -q ' /var/log/journal ' /proc/mounts; then
 	mount --bind /data/journal /var/log/journal
 fi
 
+# timesyncd's record of the last time it knew. At start it moves the clock
+# forward to it, so a reboot begins near the right time rather than at the
+# image's build date, and TLS has a chance before NTP answers. The root is
+# read-only and /var is a tmpfs, so without this it would be lost every boot.
+mkdir -p /data/timesync /var/lib/systemd/timesync
+chown systemd-timesync:systemd-timesync /data/timesync
+if ! grep -q ' /var/lib/systemd/timesync ' /proc/mounts; then
+	mount --bind /data/timesync /var/lib/systemd/timesync
+fi
+
+# The machine ID names the journal's directory. On a read-only root systemd
+# cannot save one, and makes up a new one every boot - so every boot's log
+# would land in a new directory and `journalctl -b -1` would find nothing.
+# U-Boot passes the saved one as systemd.machine_id= (boot.cmd); the first
+# boot has none, so the one systemd made up for it is saved, and that boot's
+# log is already under the ID every later boot uses. uboot.env is on the FAT
+# partition, beside the slot counters: an update replaces a slot, not this.
+mid=$(cat /etc/machine-id 2>/dev/null || true)
+if [ ${#mid} -eq 32 ] && [ -z "$(echo "$mid" | tr -d 0-9a-f)" ] && \
+   [ "$(fw_printenv -n machine_id 2>/dev/null)" != "$mid" ]; then
+	if fw_setenv machine_id "$mid"; then
+		echo "porchlight-data: machine ID $mid saved for U-Boot"
+	else
+		echo "porchlight-data: could not save the machine ID; the next boot gets a new one"
+	fi
+fi
+
 # A fresh device starts from the image's defaults. An existing one keeps its
 # own: firstboot has written its identity into these files.
 for f in /usr/share/porchlight/defaults/*; do
 	[ -e "/data/porchlight/${f##*/}" ] || cp -p "$f" /data/porchlight/
 done
 
-# The hostname and the 127.0.1.1 line are in the slot's /etc, so the first boot
-# of an update arrives with the image's name. firstboot set them once, from the
-# birth certificate; the identity it wrote is here, so set them again.
+# The hostname. /etc is read-only and says "porchlight", the image's name, so
+# the kernel's hostname is set from the identity firstboot wrote, at every
+# boot. Nothing needs the 127.0.1.1 line Debian keeps in /etc/hosts:
+# nsswitch.conf asks systemd-resolved and myhostname first, and both answer
+# for the machine's own name.
 if [ -f /data/porchlight/identity.json ]; then
 	id=$(python3 -c 'import json; print(json.load(open("/data/porchlight/identity.json"))["deviceId"])')
-	if [ -n "$id" ] && [ "$(cat /etc/hostname 2>/dev/null)" != "$id" ]; then
-		echo "$id" > /etc/hostname
+	if [ -n "$id" ] && [ "$(hostname)" != "$id" ]; then
 		hostname "$id"
-		sed -i "/^127\.0\.1\.1/d" /etc/hosts
-		printf '127.0.1.1\t%s\n' "$id" >> /etc/hosts
 		echo "porchlight-data: hostname $id, from the identity on /data"
 	fi
 fi
