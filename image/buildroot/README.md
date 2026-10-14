@@ -26,13 +26,21 @@ The LiveKit SDK is LiveKit's own prebuilt aarch64 wheel (`python-livekit`),
 hash-pinned at 1.1.19: its core is Rust, and the wheel's native library needs
 only libc, libm, libdl, libpthread and libgcc_s.
 
-**The camera runs on upstream libcamera, not Raspberry Pi's.** Upstream's
-`libcamerasrc` has no `sensor-config`, so libcamera picks the IMX708's binned
-1536x864 mode, which reads only the centre of the sensor: about 98° of the
-wide lens's 120°. Raspberry Pi's libcamera, as a package of our own, is what
-gets the rest back. Its DMA heaps also needed a udev rule
-(`60-dma-heap.rules`): without it libcamera, running as `porchlight`, logged
-`Could not open any dma-buf provider` and found no camera.
+**The camera runs on upstream libcamera, with one patch of ours.** Upstream
+v0.7.0 has `CameraConfiguration::sensorConfig`, and the Pi's pipeline handler
+honours it, but its `libcamerasrc` had no property to set it. Left to choose,
+libcamera picks the IMX708's binned 1536x864 mode for a 640x360 stream, which
+reads only the centre of the sensor: about 98° of the wide lens's 120°.
+`patches/libcamera/0001-…sensor-config…patch` adds the property, in the
+format Raspberry Pi's fork uses, so `record-clip.py` and `webrtc-video.py`
+needed no change. One small patch was the alternative to building the whole
+fork as a package of our own and keeping it in step. Since release-9 every
+clip and call logs `Selected sensor format: 2304x1296`, and the call holds
+30 fps in it.
+
+Its DMA heaps also needed a udev rule (`60-dma-heap.rules`): without it
+libcamera, running as `porchlight`, logged `Could not open any dma-buf
+provider` and found no camera.
 
 ## Getting in
 
@@ -118,8 +126,9 @@ channels and logged `set chanspec ... fail, reason -52` for each.
 
 ## A/B updates: U-Boot and RAUC
 
-The card is four partitions: **boot** (64 MB FAT: GPU firmware, U-Boot,
-`boot.scr`, device trees, `config.txt`, `uboot.env`), **slot A** and
+The card is U-Boot's environment in raw sectors, then four partitions on
+4 MiB boundaries: **boot** (64 MB FAT, read-only: GPU firmware, U-Boot,
+`boot.scr`, device trees, `config.txt`), **slot A** and
 **slot B** (512 MB each: a whole root filesystem, each with its own kernel in
 `/boot`), and **data** (`/data`: the credential, identity and config,
 Wi-Fi profiles, SSH host keys, RAUC's status). An update writes the slot that
@@ -198,7 +207,7 @@ written goes to RAM, gone at reboot, or to `/data`, kept:
 | `/var` | A tmpfs, filled at every boot from the image's copy in `/usr/share/factory/var` - Buildroot's "var factory", which is what `# BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW is not set` brings. Packages' state, the clip spool (`porchlightd.service` creates it, since nothing made at install time survives) |
 | `/data/journal` | The log, bind-mounted at `/var/log/journal`, synced every 30 s |
 | `/data/timesync` | timesyncd's clock file, bind-mounted at `/var/lib/systemd/timesync`: a reboot starts at the right date, not at the build's |
-| `uboot.env` | The machine ID (below), beside the slot counters |
+| U-Boot's environment | The machine ID (below), beside the slot counters |
 
 To change a file by hand for a test: `mount -o remount,rw /`, edit,
 `mount -o remount,ro /`. The next update replaces it anyway.
@@ -206,7 +215,7 @@ To change a file by hand for a test: `mount -o remount,rw /`, edit,
 **The machine ID.** systemd names the journal's directory after it, and on a
 read-only `/etc` it cannot save one, so it makes up a new one every boot -
 and `journalctl -b -1` would find nothing. The first boot's is saved in
-`uboot.env` by `porchlight-data` (`fw_setenv machine_id`), and `boot.cmd`
+U-Boot's environment by `porchlight-data` (`fw_setenv machine_id`), and `boot.cmd`
 passes it back as `systemd.machine_id=`. Every later boot, in either slot, is
 the same machine, and the first boot's log is already filed under that ID.
 
@@ -261,14 +270,36 @@ BCM2835's watchdog because systemd (`RuntimeWatchdogSec=30s`) had stopped
 feeding it. Without one, a doorbell that hangs stays hung until someone
 pulls its plug.
 
-**Next, and the weakest point now: the boot partition.** It is FAT, shared by
-both slots, and `uboot.env` on it is rewritten by U-Boot at every boot and by
-RAUC at every mark-good. A power cut inside one of those writes leaves no slot
-bootable, and neither A/B nor a read-only root protects it - the drill's
-`FAT-fs (mmcblk0p1): Volume was not properly unmounted` was harmless, but it
-was this. The usual answer is U-Boot's redundant environment: two copies in
-raw sectors outside any filesystem, written alternately, so a torn write
-leaves the other copy good.
+## U-Boot's environment, twice, in raw sectors
+
+**From release-8 (2026-10-14), which needs a reflash: the card's layout
+changed.** The power-cut drill showed the last weak point: `uboot.env` was a
+file on the FAT, shared by both slots, rewritten by U-Boot at every boot and
+by RAUC at every mark-good. A power cut inside that write could leave no slot
+bootable, which neither A/B nor a read-only root protects.
+
+Now U-Boot keeps its environment in raw sectors (`uboot.fragment`:
+`ENV_IS_IN_MMC`, `SYS_REDUNDAND_ENVIRONMENT`), at 1 MiB and 2 MiB, and
+`fw_env.config` names the same two places for Linux. Each copy is a CRC, a
+one-byte counter and the variables; a save goes to the older copy with the
+next count, so a torn write leaves a copy whose CRC fails, and the other is
+used. The FAT is mounted read-only; only firstboot's unit opens it, and only
+while there is a birth certificate to destroy.
+
+There was no room for this: p1 began at sector 1. `genimage.cfg.in` now
+aligns every partition to 4 MiB, which also stops them straddling the card's
+erase blocks - the old p2 to p4 began at odd sectors.
+
+To look at it: `fw_printenv`, or each copy's counter with
+`dd if=/dev/mmcblk0 bs=1 skip=$((0x100000+4)) count=1 | od -An -tu1`.
+
+**Proven on the Pi:** after a reflash both copies were valid, counters 1 and
+2. Then the newest was torn on purpose - 64 bytes of its variables
+overwritten, as a cut-off write would leave it - and Linux read the other
+copy at once. The Pi rebooted normally, with the same machine ID and the log
+unbroken; U-Boot's next save went over the torn copy, and the next mark-good
+gave back the one attempt the lost save had cost. With `uboot.env` that was a
+doorbell that did not boot.
 
 **What the first boot on the Pi found** (2026-10-13), each fixed on the card
 by hand, then here:
@@ -292,8 +323,9 @@ by hand, then here:
 
 The U-Boot prompt is how it was found: stop autoboot with a key, then
 `printenv fdt_addr`, `md 0x03000000 4` (a device tree starts `d00dfeed`) and
-`fdt addr 0x03000000; fdt header`. `uboot.env` on the FAT partition is
-readable from Windows too: the counters say how many times it went round.
+`fdt addr 0x03000000; fdt header`. Before release-8, `uboot.env` on the FAT
+partition was readable from Windows too, and its counters said how many times
+it went round; now `fw_printenv` on the Pi, or `printenv` at the prompt.
 
 ## Buildroot version: 2026.02.3
 
@@ -448,19 +480,25 @@ package/porchlight-call/
                         /opt/porchlight/venv/bin/python3 the daemon's config
                         names, as a link to the system Python.
 package/porchlight-ab/  A/B: RAUC's system.conf and keyring, fw_env.config for
-                        uboot.env, the hardware watchdog, the journal on /data,
-                        NetworkManager's profiles on /data, porchlight-data
-                        (prepares /data before anything reads it) and
-                        porchlight-health (the 60 s verdict).
-make-bundle.sh          A signed update bundle from the built root filesystem.
+                        U-Boot's two raw environment copies, the hardware
+                        watchdog, the journal on /data, NetworkManager's
+                        profiles on /data, porchlight-data (prepares /data
+                        before anything reads it), porchlight-health (the 60 s
+                        verdict) and firstboot's drop-in that opens the
+                        read-only boot partition while it needs to.
+make-bundle.sh          A signed update bundle from the built root filesystem,
+                        refused if the host's RAUC rejects its system.conf.
 board/porchlight/rpi4/  Copies of Buildroot's Pi 4 files, now ours.
   config.txt            Read by the GPU firmware: U-Boot, 64-bit, overlays.
   cmdline.txt           The firmware's half of the kernel command line;
                         boot.cmd adds root=, rauc.slot= and panic=.
   boot.cmd              U-Boot's script: choose a slot, spend an attempt,
                         boot it, and reset if it does not.
+  uboot.fragment        Merged into U-Boot's rpi_4 config: its environment in
+                        two raw copies at 1 and 2 MiB, not a FAT file.
   post-build.sh         Runs before the root filesystem is packed: the HDMI
-                        login prompt, fstab for /boot/firmware and /data, the
+                        login prompt, fstab for / (no fsck), /boot/firmware
+                        (read-only) and /data, the
                         links that put /etc/porchlight and dropbear's keys on
                         /data, and permissions a Windows checkout cannot be
                         trusted to carry.
@@ -470,11 +508,15 @@ board/porchlight/rpi4/  Copies of Buildroot's Pi 4 files, now ours.
                         firewall-backend=none - the setup access point shares
                         nothing, and there is no nft or iptables to share with
                         - and its hostname-mode=none, setup's captive-portal
-                        file, systemd-resolved without DNSSEC, the mixer
-                        state, and the udev rules that give /dev/gpiochip* to
-                        gpio and /dev/dma_heap to video.
+                        file, systemd-resolved without DNSSEC, mDNS or LLMNR,
+                        the mixer state, and the udev rules that give
+                        /dev/gpiochip* to gpio and /dev/dma_heap to video.
   post-image.sh         Runs genimage to make sdcard.img, with boot.scr.
-  genimage.cfg.in       The SD card: boot, slot A, slot B, data.
+  genimage.cfg.in       The SD card: the environment's gap, then boot, slot
+                        A, slot B and data, each on a 4 MiB boundary.
   patches/*/*.hash      SHA-256 of the kernel and U-Boot tarballs. Downloads
                         are refused without a matching hash.
+  patches/libcamera/    libcamerasrc's sensor-config, the one change we carry
+                        on upstream libcamera. Applied when libcamera is
+                        unpacked, so a new patch needs libcamera-dirclean.
 ```
