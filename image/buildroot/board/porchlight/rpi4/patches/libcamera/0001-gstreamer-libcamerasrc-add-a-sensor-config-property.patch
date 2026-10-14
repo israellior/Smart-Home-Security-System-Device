@@ -1,0 +1,127 @@
+From 92074f71e80c23a2fb5ae6601e76144cbc36b5dd Mon Sep 17 00:00:00 2001
+From: Israel Lior <israellior1@gmail.com>
+Date: Wed, 14 Oct 2026 14:31:29 +0300
+Subject: [PATCH] gstreamer: libcamerasrc: add a sensor-config property
+
+Lets a pipeline choose the sensor mode, through the
+CameraConfiguration::sensorConfig the Raspberry Pi pipeline handler
+already honours. Without it the mode follows the stream size, and on
+the Camera Module 3 a 640x360 stream gets the 1536x864 mode, which reads
+only the centre of the sensor: about 98 degrees of a 120 degree lens.
+
+The property takes a structure in the format Raspberry Pi's fork uses,
+sensor/config,width=2304,height=1296,depth=10, so pipelines written for
+that fork work unchanged.
+---
+ src/gstreamer/gstlibcamerasrc.cpp | 53 +++++++++++++++++++++++++++++++
+ 1 file changed, 53 insertions(+)
+
+diff --git a/src/gstreamer/gstlibcamerasrc.cpp b/src/gstreamer/gstlibcamerasrc.cpp
+index a7241e9..e0fa721 100644
+--- a/src/gstreamer/gstlibcamerasrc.cpp
++++ b/src/gstreamer/gstlibcamerasrc.cpp
+@@ -141,6 +141,7 @@ struct _GstLibcameraSrc {
+ 	GstTask *task;
+ 
+ 	gchar *camera_name;
++	GstStructure *sensor_config;
+ 
+ 	std::atomic<GstEvent *> pending_eos;
+ 
+@@ -152,6 +153,7 @@ struct _GstLibcameraSrc {
+ enum {
+ 	PROP_0,
+ 	PROP_CAMERA_NAME,
++	PROP_SENSOR_CONFIG,
+ 	PROP_LAST
+ };
+ 
+@@ -606,6 +608,37 @@ gst_libcamera_src_negotiate(GstLibcameraSrc *self)
+ 		gst_libcamera_get_framerate_from_caps(caps, element_caps);
+ 	}
+ 
++	/*
++	 * Ask for a particular sensor mode, if one was given. Without it the
++	 * pipeline handler chooses the mode from the stream size, and for a
++	 * small stream that can be a cropped one - a narrower field of view.
++	 */
++	GstStructure *sensor_config = nullptr;
++	{
++		GLibLocker lock(GST_OBJECT(self));
++		if (self->sensor_config)
++			sensor_config = gst_structure_copy(self->sensor_config);
++	}
++	if (sensor_config) {
++		gint width = 0, height = 0, depth = 0;
++		if (gst_structure_get_int(sensor_config, "width", &width) &&
++		    gst_structure_get_int(sensor_config, "height", &height) &&
++		    gst_structure_get_int(sensor_config, "depth", &depth) &&
++		    width > 0 && height > 0 && depth > 0) {
++			SensorConfiguration sensorConfig;
++			sensorConfig.outputSize = Size(width, height);
++			sensorConfig.bitDepth = depth;
++			state->config_->sensorConfig = sensorConfig;
++			GST_INFO_OBJECT(self, "Sensor configuration %dx%d, %d bits",
++					 width, height, depth);
++		} else {
++			GST_ELEMENT_WARNING(self, RESOURCE, SETTINGS,
++					    ("sensor-config needs a positive width, height and depth; ignored"),
++					    ("%" GST_PTR_FORMAT, sensor_config));
++		}
++		gst_structure_free(sensor_config);
++	}
++
+ 	/* Validate the configuration. */
+ 	CameraConfiguration::Status status = state->config_->validate();
+ 	if (status == CameraConfiguration::Invalid)
+@@ -934,6 +967,11 @@ gst_libcamera_src_set_property(GObject *object, guint prop_id,
+ 		g_free(self->camera_name);
+ 		self->camera_name = g_value_dup_string(value);
+ 		break;
++	case PROP_SENSOR_CONFIG:
++		if (self->sensor_config)
++			gst_structure_free(self->sensor_config);
++		self->sensor_config = static_cast<GstStructure *>(g_value_dup_boxed(value));
++		break;
+ 	default:
+ 		if (!state->controls_.setProperty(prop_id - PROP_LAST, value, pspec))
+ 			G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+@@ -953,6 +991,9 @@ gst_libcamera_src_get_property(GObject *object, guint prop_id, GValue *value,
+ 	case PROP_CAMERA_NAME:
+ 		g_value_set_string(value, self->camera_name);
+ 		break;
++	case PROP_SENSOR_CONFIG:
++		g_value_set_boxed(value, self->sensor_config);
++		break;
+ 	default:
+ 		if (!state->controls_.getProperty(prop_id - PROP_LAST, value, pspec))
+ 			G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+@@ -1040,6 +1081,8 @@ gst_libcamera_src_finalize(GObject *object)
+ 	g_clear_object(&self->task);
+ 	g_mutex_clear(&self->state->lock_);
+ 	g_free(self->camera_name);
++	if (self->sensor_config)
++		gst_structure_free(self->sensor_config);
+ 	delete self->state;
+ 
+ 	return klass->finalize(object);
+@@ -1162,6 +1205,16 @@ gst_libcamera_src_class_init(GstLibcameraSrcClass *klass)
+ 							     | G_PARAM_STATIC_STRINGS));
+ 	g_object_class_install_property(object_class, PROP_CAMERA_NAME, spec);
+ 
++	spec = g_param_spec_boxed("sensor-config", "Sensor Configuration",
++				   "The sensor mode to use, as a structure with width, height and"
++				   " depth (bits per pixel): sensor/config,width=2304,height=1296,depth=10."
++				   " Unset, the pipeline handler chooses one for the stream size.",
++				   GST_TYPE_STRUCTURE,
++				   (GParamFlags)(GST_PARAM_MUTABLE_READY
++						 | G_PARAM_READWRITE
++						 | G_PARAM_STATIC_STRINGS));
++	g_object_class_install_property(object_class, PROP_SENSOR_CONFIG, spec);
++
+ 	GstCameraControls::installProperties(object_class, PROP_LAST);
+ }
+ 
+-- 
+2.43.0
+
