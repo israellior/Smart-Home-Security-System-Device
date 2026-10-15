@@ -327,6 +327,51 @@ The U-Boot prompt is how it was found: stop autoboot with a key, then
 partition was readable from Windows too, and its counters said how many times
 it went round; now `fw_printenv` on the Pi, or `printenv` at the prompt.
 
+## A smaller image
+
+**From release-10 (2026-10-15), a clean build:** the system slot from
+296 MiB to 228, the update bundle from 120 MB to 89 - what every device
+downloads. Measured first, cut in order of what it cost:
+
+| | Before | After |
+|---|---|---|
+| Kernel modules | 29 MiB, 1904 files | 2.7 MiB, 72 |
+| FFmpeg | 19 MiB | gone: `voaacenc` encodes the AAC |
+| udev's hwdb | 22 MiB | gone (`# BR2_PACKAGE_SYSTEMD_HWDB is not set`) |
+| Kernel `Image` | 24 MiB | 23 MiB |
+| Python, mostly LiveKit's Rust library and numpy | 84 MiB | 84 MiB: the call needs it |
+
+**The kernel** is `linux.config`: Raspberry Pi's `bcm2711_defconfig` cut by
+`make localmodconfig` to `kernel-modules.txt`, the modules the Pi loads.
+`localmodconfig` turns off modules and leaves built-in drivers alone, which is
+why `Image` barely moved; cutting those is the next round, by hand.
+
+The list is the lesson. A normal boot's `lsmod` did not have `dm_mod`,
+`dm_verity`, `dm_bufio` or `squashfs`, which load only while RAUC opens a
+bundle - a kernel cut to it would have run perfectly and never installed
+another update. So the list was taken after a clip, a call and
+`rauc mount` of a bundle, and `post-build.sh` refuses an image missing any
+module on it. On the first build it did: `libaes` and `snd_compress`, both
+only dependencies of things removed on purpose (Bluetooth; compressed audio
+offload) - so they left the list, with the reason written in it.
+
+**AAC without FFmpeg.** `voaacenc` is the default now. A device's config is
+on `/data`, which no update touches, and porch-2's said `avenc_aac`: on this
+image that clip would not have parsed. `record-clip.py` swaps a missing AAC
+encoder for one the system has, and logs it - `avenc_aac is not on this
+system; recording AAC with voaacenc`.
+
+**Buildroot never removes what a package installed.** Turning FFmpeg and the
+hwdb off and rebuilding leaves their files in `output/target`; only a clean
+build (`make clean all`, three hours here) shows the real size.
+
+**Proven on the Pi** (release-10 as a bundle): 0 failed units and no driver
+errors; Wi-Fi, the sound card and the camera; a chime and a clip with sound,
+recorded through the fallback; a live call at 30 fps with the microphone,
+ended by itself; and `rauc mount` of a bundle through dm-verity, so the
+update path survived the cut. Talk-back was not used in that call; the
+speaker it plays through played the chime.
+
 ## Buildroot version: 2026.02.3
 
 Pinned on purpose. `.02` releases are Buildroot's LTS and get fixes for a
@@ -516,6 +561,10 @@ board/porchlight/rpi4/  Copies of Buildroot's Pi 4 files, now ours.
                         A, slot B and data, each on a 4 MiB boundary.
   patches/*/*.hash      SHA-256 of the kernel and U-Boot tarballs. Downloads
                         are refused without a matching hash.
+  linux.config          The kernel's config: bcm2711_defconfig cut to the
+                        modules the doorbell loads, in defconfig form.
+  kernel-modules.txt    Those modules, taken on the Pi; post-build.sh refuses
+                        an image that lacks one.
   patches/libcamera/    libcamerasrc's sensor-config, the one change we carry
                         on upstream libcamera. Applied when libcamera is
                         unpacked, so a new patch needs libcamera-dirclean.

@@ -73,6 +73,7 @@ the viewer is the app rather than a page served from here.
 | — | A read-only system slot | **runs on the Pi 2026-10-14** (release-4, then release-6 into B): root `ro`, `/var` in RAM, the log and the clock file on `/data`, one machine ID kept by U-Boot so the log runs across both slots. Survived a power cut mid-recording, and the hardware watchdog reset a crashed kernel in under 30 s. Release-7 is the first good one: release-4 cannot install updates without `rauc --mount=/run/rauc`, and release-6's RAUC refuses its own config. The boot partition is read-only since release-8 |
 | — | U-Boot's environment in two raw copies | **runs on the Pi 2026-10-14** (release-8, a reflash: partitions now on 4 MiB): a copy torn on purpose was passed over for the other, and the Pi booted with its machine ID and slot counters |
 | — | The full 120° camera view | **runs on the Pi 2026-10-14** (release-9, as a bundle): a patch adds `sensor-config` to upstream `libcamerasrc`; clips and calls select 2304×1296 and the call holds 30 fps |
+| — | A smaller image | **runs on the Pi 2026-10-15** (release-10, a clean build, as a bundle): 296 → 228 MiB, bundle 120 → 89 MB. Kernel cut by `localmodconfig` to `kernel-modules.txt` (1904 modules → 72), checked at every build; `voaacenc` instead of FFmpeg, with a fallback for configs on `/data` that still say `avenc_aac`; no udev hwdb. Built-in drivers, and so the 23 MiB `Image`, not yet cut |
 
 ### Read this first: what has run on hardware, and what has not
 
