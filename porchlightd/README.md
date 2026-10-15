@@ -543,14 +543,20 @@ Probed on the Pi, GStreamer 1.26.2, all present:
 
 | Element | From | Rank | For |
 |---|---|---|---|
-| `avenc_aac` | gst-libav | none (0) | the audio encoder we use |
-| `voaacenc` | gst-plugins-bad | secondary (128) | fallback; takes S16LE only |
+| `voaacenc` | gst-plugins-bad | secondary (128) | the audio encoder we use; takes S16LE only |
+| `avenc_aac` | gst-libav | none (0) | the default until 2026-10-14 |
 | `mp4mux` | gst-plugins-good | primary (256) | the muxer |
 
 `avenc_aac` takes a wider input range (`channels: [1,16]`) and encodes speech
-better at low bitrates, so it stays the default in the config.
+better at low bitrates, and was the default for that. It is also FFmpeg, 19 MiB
+of the Buildroot image for this one element, so the image dropped it and the
+default became `voaacenc` (Apache-2.0, a few hundred KB). Clips use its default
+128 kbps, above where the difference in quality shows; `audioconvert` before it
+gives it the S16LE it needs. A device whose config on `/data` still names
+`avenc_aac` keeps recording: `record-clip.py` swaps a missing encoder for one
+that is there.
 
-Its **rank is none**, which means autoplugging will never choose it on its own.
+`avenc_aac`'s **rank is none**, which means autoplugging will never choose it on its own.
 That is harmless while the pipeline names every element explicitly, and a trap
 the day anything here reaches for `encodebin` or `decodebin`.
 

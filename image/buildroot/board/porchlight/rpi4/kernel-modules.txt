@@ -1,0 +1,83 @@
+# The kernel modules the doorbell loads, recorded on the Pi on 2026-10-14
+# (release-9) after a clip, a live call and `rauc mount` of a bundle had all
+# run in one boot. linux.config is cut down to these, and post-build.sh
+# refuses an image that is missing any of them.
+#
+# A boot's lsmod alone is not enough: dm_bufio, dm_mod, dm_verity and squashfs
+# load only while RAUC opens a bundle, so a kernel cut to a normal boot's list
+# would run perfectly and never install another update.
+#
+# Left out on purpose: bluetooth, btbcm, hci_uart, ecc, ecdh_generic and
+# libaes - the Wi-Fi chip has Bluetooth and the kernel loaded it, but nothing
+# here uses it - and snd_compress, which the old snd_soc_core needed only
+# because some other codec driver in bcm2711_defconfig selected compressed
+# offload; the cut kernel's snd_soc_core does not depend on it. Both were
+# found by the check in post-build.sh, on the first build of the cut kernel.
+#
+# To add one: load it on the Pi, add its name here (lsmod's spelling), and
+# turn it on in linux.config.
+backlight
+bcm2835_codec
+bcm2835_isp
+bcm2835_mmal_vchiq
+bcm2835_unicam_legacy
+bcm2835_v4l2
+brcmfmac
+brcmfmac_wcc
+brcmutil
+cec
+cfg80211
+dm_bufio
+dm_mod
+dm_verity
+drm
+drm_display_helper
+drm_dma_helper
+drm_kms_helper
+drm_panel_orientation_quirks
+drm_shmem_helper
+dw9807_vcm
+fuse
+gpu_sched
+i2c_bcm2835
+i2c_brcmstb
+i2c_mux
+i2c_mux_pinctrl
+imx708
+ipv6
+mc
+nfnetlink
+nvmem_rmem
+raspberrypi_gpiomem
+raspberrypi_hwmon
+regmap_i2c
+rfkill
+rpi_hevc_dec
+sch_fq_codel
+snd
+snd_bcm2835
+snd_pcm
+snd_pcm_dmaengine
+snd_soc_bcm2835_i2s
+snd_soc_core
+snd_soc_hdmi_codec
+snd_soc_simple_card
+snd_soc_simple_card_utils
+snd_soc_wm8960
+snd_timer
+squashfs
+uio
+uio_pdrv_genirq
+v3d
+v4l2_async
+v4l2_dv_timings
+v4l2_fwnode
+v4l2_mem2mem
+vc4
+vc_sm_cma
+videobuf2_common
+videobuf2_dma_contig
+videobuf2_memops
+videobuf2_v4l2
+videobuf2_vmalloc
+videodev

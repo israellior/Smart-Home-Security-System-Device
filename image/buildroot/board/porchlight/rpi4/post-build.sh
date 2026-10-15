@@ -15,6 +15,24 @@ elif [ -d ${TARGET_DIR}/etc/systemd ]; then
        "${TARGET_DIR}/etc/systemd/system/getty.target.wants/getty@tty1.service"
 fi
 
+# Every kernel module the doorbell loads (kernel-modules.txt), present as a
+# file or built in. linux.config was cut down to that list, and a later change
+# to it that drops one - the bundle-opening dm_verity, say - would otherwise
+# build an image that boots, runs, and can never be updated.
+KMODS=$(ls -d "${TARGET_DIR}"/lib/modules/*/ 2>/dev/null | head -1)
+if [ -z "${KMODS}" ] || [ ! -f "${KMODS}/modules.builtin" ]; then
+	echo "post-build: no kernel modules in ${TARGET_DIR}/lib/modules" >&2
+	exit 1
+fi
+{ find "${KMODS}" -name '*.ko*'; cat "${KMODS}/modules.builtin"; } \
+	| sed 's|.*/||; s|\.ko.*||' | tr - _ | sort -u > "${BUILD_DIR}/porchlight-kmods-present"
+missing=$(grep -vE '^(#|$)' "$(dirname "$0")/kernel-modules.txt" | tr - _ \
+	| grep -vxFf "${BUILD_DIR}/porchlight-kmods-present" || true)
+if [ -n "${missing}" ]; then
+	echo "post-build: the kernel lacks modules the doorbell needs:" ${missing} >&2
+	exit 1
+fi
+
 # The root is read-only, so nothing can leave it needing a check, and the
 # image has no fsck.ext4 to check it with: pass 1 only made every boot log
 # "fsck failed". Pass 0.

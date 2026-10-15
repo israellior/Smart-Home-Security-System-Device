@@ -9,7 +9,6 @@ config BR2_PACKAGE_PORCHLIGHT_RECORDER
 	depends on BR2_PACKAGE_GST1_PLUGINS_GOOD
 	depends on BR2_PACKAGE_GST1_PLUGINS_BAD
 	depends on BR2_PACKAGE_GST1_PLUGINS_UGLY
-	depends on BR2_PACKAGE_GST1_LIBAV       # avenc_aac
 	depends on BR2_PACKAGE_LIBCAMERA        # libcamerasrc
 	depends on BR2_PACKAGE_GST1_PYTHON      # record-clip.py: from gi.repository import Gst
 	# alsasrc, videoconvert, audioconvert, audioresample, and the test
@@ -23,6 +22,9 @@ config BR2_PACKAGE_PORCHLIGHT_RECORDER
 	select BR2_PACKAGE_GST1_PLUGINS_GOOD_PLUGIN_ISOMP4        # mp4mux
 	select BR2_PACKAGE_GST1_PLUGINS_GOOD_PLUGIN_AUDIOPARSERS  # aacparse
 	select BR2_PACKAGE_GST1_PLUGINS_BAD_PLUGIN_VIDEOPARSERS   # h264parse
+	# AAC without FFmpeg: vo-aacenc is a few hundred KB, where gst1-libav
+	# brought 19 MiB of FFmpeg for its avenc_aac alone.
+	select BR2_PACKAGE_GST1_PLUGINS_BAD_PLUGIN_VOAACENC       # voaacenc
 	select BR2_PACKAGE_GST1_PLUGINS_UGLY_PLUGIN_X264          # x264enc
 	# The Pi's own camera pipeline: the IMX708 through the VideoCore ISP.
 	select BR2_PACKAGE_LIBCAMERA_PIPELINE_RPI_VC4
@@ -30,7 +32,7 @@ config BR2_PACKAGE_PORCHLIGHT_RECORDER
 	  record-clip.py and upload-clip.py: the clips porchlightd records
 	  on a ring or motion, and the three-step upload that sends them.
 
-comment "porchlight-recorder needs GStreamer, gst1-libav, libcamera and gst1-python"
+comment "porchlight-recorder needs GStreamer, libcamera and gst1-python"
 	depends on BR2_PACKAGE_PORCHLIGHTD
-	depends on !BR2_PACKAGE_GSTREAMER1 || !BR2_PACKAGE_GST1_LIBAV || \
+	depends on !BR2_PACKAGE_GSTREAMER1 || \
 		!BR2_PACKAGE_LIBCAMERA || !BR2_PACKAGE_GST1_PYTHON

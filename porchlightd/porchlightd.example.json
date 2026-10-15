@@ -49,7 +49,7 @@
     "audio_source": "alsa",
     "audio_device": "hw:CARD=wm8960soundcard",
     "encoder": "x264",
-    "aac_element": "avenc_aac",
+    "aac_element": "voaacenc",
     "width": 640,
     "height": 360,
     "fps": 30,

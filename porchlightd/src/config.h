@@ -115,8 +115,9 @@ struct RecorderConfig {
   std::string audio_source{"test"};  // test | alsa
   std::string audio_device{"hw:CARD=wm8960soundcard"};
   std::string encoder{"x264"};  // x264 | v4l2
-  // Probed at startup: which AAC encoder exists differs between Pi OS and WSL.
-  std::string aac_element{"avenc_aac"};
+  // Which AAC encoder exists differs by system. record-clip.py swaps a missing
+  // one for one that is there, since this outlives the image on /data.
+  std::string aac_element{"voaacenc"};
   int width{640};
   int height{480};
   int fps{30};

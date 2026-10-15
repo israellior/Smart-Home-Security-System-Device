@@ -23,6 +23,10 @@ camera's properties differ between libcamera builds - sensor-config exists only
 in Raspberry Pi's - and one the element lacks fails the whole parse, so a clip
 records nothing. Each is set on the element named "camera" only if it has it.
 
+The AAC encoder is checked the same way: one the system lacks is replaced by
+one it has (AAC_ENCODERS), because the name comes from a config on /data that
+outlives the image it was written for.
+
 Exit codes: 0 the muxer saw EOS and the file is finished, 1 GStreamer reported
 an error, 2 the description did not parse.
 """
@@ -39,6 +43,33 @@ from gi.repository import GLib, Gst  # noqa: E402
 
 def note(text):
     print(f"record-clip: {text}", file=sys.stderr, flush=True)
+
+
+# Every AAC encoder a clip can use, best first. Which exist differs by system:
+# the Buildroot image has voaacenc and, since FFmpeg left it, no avenc_aac;
+# Raspberry Pi OS has whatever gstreamer1.0-libav and -plugins-bad brought.
+AAC_ENCODERS = ("voaacenc", "avenc_aac", "fdkaacenc")
+
+
+def available_aac(tokens):
+    """tokens, with an AAC encoder this system lacks swapped for one it has.
+
+    The daemon names the encoder from its config, and the config lives on
+    /data, which an update never touches - so a device whose config says
+    avenc_aac keeps saying it after an update that took FFmpeg away, and every
+    clip would fail to parse. Swapped here, where GStreamer can be asked.
+    """
+    present = [name for name in AAC_ENCODERS if Gst.ElementFactory.find(name)]
+    result = []
+    for token in tokens:
+        if token in AAC_ENCODERS and token not in present:
+            if not present:
+                note(f"no AAC encoder here ({', '.join(AAC_ENCODERS)}); leaving {token}")
+            else:
+                note(f"{token} is not on this system; recording AAC with {present[0]}")
+                token = present[0]
+        result.append(token)
+    return result
 
 
 def set_camera_properties(pipeline, settings):
@@ -78,6 +109,7 @@ def main():
         parser.error("no pipeline given")
 
     Gst.init(None)
+    tokens = available_aac(tokens)
     try:
         # parse_launchv is what gst-launch itself calls on its argv, so the
         # daemon's quoting - device="hw:CARD=..." - means here exactly what it
