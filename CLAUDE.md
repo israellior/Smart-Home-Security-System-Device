@@ -74,6 +74,7 @@ the viewer is the app rather than a page served from here.
 | — | U-Boot's environment in two raw copies | **runs on the Pi 2026-10-14** (release-8, a reflash: partitions now on 4 MiB): a copy torn on purpose was passed over for the other, and the Pi booted with its machine ID and slot counters |
 | — | The full 120° camera view | **runs on the Pi 2026-10-14** (release-9, as a bundle): a patch adds `sensor-config` to upstream `libcamerasrc`; clips and calls select 2304×1296 and the call holds 30 fps |
 | — | A smaller image | **runs on the Pi 2026-10-15** (release-10, a clean build, as a bundle): 296 → 228 MiB, bundle 120 → 89 MB. Kernel cut by `localmodconfig` to `kernel-modules.txt` (1904 modules → 72), checked at every build; `voaacenc` instead of FFmpeg, with a fallback for configs on `/data` that still say `avenc_aac`; no udev hwdb. Built-in drivers, and so the 23 MiB `Image`, not yet cut |
+| — | The Wi-Fi signal, reported to the app | **written 2026-10-15, never run on the Pi.** `server-bridge.py` reads `/proc/net/wireless` every 30 s and sends `{"type":"link","rssi":…}` on a 3 dB change; the app shows bars on the device page and "Weak Wi-Fi" over the call. Only the parser was checked, against sample files. See `docs/server-brief.md` |
 
 ### Read this first: what has run on hardware, and what has not
 

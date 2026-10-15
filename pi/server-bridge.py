@@ -16,6 +16,12 @@ hello, and relays JSON lines both ways.
                         {"type":"event-ack","eventId":...,"kind":...,"ok":...}
                         {"type":"viewer-requested","peer":7}
 
+    bridge --> server   {"type":"link","rssi":-61}
+
+The last one is the bridge's own and never passes through the daemon: it is
+the Wi-Fi signal, for the app to show, and the bridge is the process that is
+on the network. See read_rssi.
+
 There is no enrolment. The credential is written onto the SD card when the
 device is built; this only ever reads it.
 
@@ -72,6 +78,18 @@ CLOSE_REPLACED = 4001
 CLOSE_BAD_CREDENTIAL = 4002
 CLOSE_NO_HELLO = 4003
 
+# The Wi-Fi signal, for the app. Read every half minute and sent only when it
+# has moved by a few dB - a signal wanders by one or two from second to second,
+# and every frame fans out to every phone watching this doorbell. The server
+# ignores anything faster than every five seconds.
+LINK_SAMPLE_INTERVAL = 30.0
+LINK_REPORT_STEP = 3
+WIRELESS_STATS = "/proc/net/wireless"
+
+# "Not yet reported on this connection", which is not the same as None: None
+# is a report, and means "not on Wi-Fi".
+_UNSENT = object()
+
 
 def hello_frame(device_id, credential):
     """Said first on every connection, by the bridge and by --probe alike."""
@@ -96,6 +114,53 @@ def close_meaning(code):
     if code == 1013:
         return "the server is temporarily unable to take us. It is worth retrying."
     return "no reason given; the daemon would retry with backoff."
+
+
+def read_rssi(path=WIRELESS_STATS):
+    """The Wi-Fi signal in dBm, or None when there is no Wi-Fi to report.
+
+    /proc/net/wireless rather than nmcli or iw: it is one read of a file with
+    no process to start, it is there on Raspberry Pi OS and on our own image
+    (CONFIG_CFG80211_WEXT), and it does not need NetworkManager to be the one
+    managing the link. Two header lines, then one line per interface:
+
+        wlan0: 0000   58.  -52.  -256   0  0  0  0  0   0
+
+    The third number is the level. brcmfmac reports it in dBm; some drivers
+    report it unsigned, which is the same number plus 256.
+
+    None for a doorbell on a cable, or one whose driver reports nothing - the
+    app then shows no signal rather than a made-up one.
+    """
+    try:
+        with open(path) as handle:
+            lines = handle.read().splitlines()[2:]
+    except OSError:
+        return None
+
+    readings = {}
+    for line in lines:
+        name, _, rest = line.partition(":")
+        fields = rest.split()
+        if len(fields) < 3:
+            continue
+        try:
+            level = float(fields[2].rstrip("."))
+        except ValueError:
+            continue
+        if level > 0:
+            level -= 256
+        # Zero is what an interface with no association reports.
+        if level == 0 or level < -120:
+            continue
+        readings[name.strip()] = round(level)
+
+    if not readings:
+        return None
+    # wlan0 is the one that faces the house. The setup access point, when it
+    # is up, is a second interface on the same radio and says nothing about
+    # the home network.
+    return readings.get("wlan0", next(iter(readings.values())))
 
 
 def emit(message):
@@ -228,13 +293,20 @@ class Bridge:
         self.delay = RECONNECT_INITIAL
         # Armed when the socket opens, cancelled by hello-ok. See HELLO_TIMEOUT.
         self.hello_timer = None
-        # stdin is read on its own thread, so two threads can reach the socket.
-        # websocket-client does not serialise writes, and interleaved frames
-        # would corrupt the stream rather than merely reorder it.
+        # stdin is read on its own thread, and the signal on another, so three
+        # threads can reach the socket. websocket-client does not serialise
+        # writes, and interleaved frames would corrupt the stream rather than
+        # merely reorder it.
         self.sending = threading.Lock()
+        # What the server was last told the signal is, on this connection.
+        self.link_sent = _UNSENT
+        # Set on hello-ok, so a new connection reports at once instead of up
+        # to half a minute later.
+        self.link_wake = threading.Event()
 
     def run(self):
         threading.Thread(target=self.read_stdin, daemon=True).start()
+        threading.Thread(target=self.report_link, daemon=True).start()
         while not self.stop:
             self.connect_once()
             if self.stop:
@@ -297,6 +369,9 @@ class Bridge:
             self.delay = RECONNECT_INITIAL  # a good connection resets the backoff
             note(f"connected as role={HELLO_ROLE} deviceId={self.device_id}")
             emit({"type": "online"})
+            # The server forgets the signal with the connection.
+            self.link_sent = _UNSENT
+            self.link_wake.set()
         elif kind == "hello-error":
             # The server should close after this, and this one does. Closing it
             # ourselves covers the server that does not: a socket left open
@@ -346,6 +421,28 @@ class Bridge:
         except Exception as error:  # the socket can die between check and send
             note(f"send failed: {error}")
             return False
+
+    def report_link(self):
+        """Tells the server how good the Wi-Fi is, when that changes.
+
+        On its own thread rather than in run_forever's, because that thread
+        answers the server's pings and must never wait on anything. Reading a
+        /proc file does not block in practice, but the rule is simpler kept
+        without exceptions.
+        """
+        while not self.stop:
+            if self.ready:
+                rssi = read_rssi()
+                last = self.link_sent
+                moved = (
+                    last is _UNSENT
+                    or (rssi is None) != (last is None)
+                    or (rssi is not None and abs(rssi - last) >= LINK_REPORT_STEP)
+                )
+                if moved and self.send({"type": "link", "rssi": rssi}):
+                    self.link_sent = rssi
+            self.link_wake.wait(LINK_SAMPLE_INTERVAL)
+            self.link_wake.clear()
 
     def read_stdin(self):
         """Lines from the daemon. EOF means the daemon is gone; so are we."""

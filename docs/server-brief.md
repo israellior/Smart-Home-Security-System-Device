@@ -139,6 +139,22 @@ copies it out. You do not need to suppress them, and you do not need to send
 one when a second viewer joins a call that is already running — though it costs
 nothing if you do.
 
+### Wi-Fi signal — device to server, on the WebSocket
+
+```json
+{ "type": "link", "rssi": -61 }
+```
+
+Sent by `server-bridge.py` itself, not by the daemon: right after every
+`hello-ok`, and after that only when the level has moved by 3 dB or more,
+checked every 30 s. `rssi` is dBm, read from `/proc/net/wireless`, preferring
+`wlan0`. **`null` is a report, not a missing value**: the doorbell is not on
+Wi-Fi, or its driver says nothing, and the app should show no signal at all.
+
+Nothing comes back. The server keeps the last reading in memory for as long as
+the socket is up, forgets it when the socket goes, and ignores reports that
+arrive less than 5 s apart.
+
 ### Clip upload
 
 **Changed from the first issue of this brief.** The device's uploader was not
