@@ -16,8 +16,14 @@ import wave
 
 RATE = 48000
 TONES = ((784, 18 * 1024), (622, 32 * 1024))  # (Hz, samples)
-LEVEL = 0.4 * 32767                            # well short of clipping
 FADE = RATE // 100                              # 10 ms each end: no click
+
+# The speaker's amplifier runs at full volume from boot (+6 dB, both boosts at
+# 5), for the live call. The chime was right at the old setting - -17 dB, the
+# boosts at 4 - so the file carries the difference instead: 23 dB of volume
+# and 0.65 dB of boost (1.8x over 1.67x). The call is loud, the chime as it was.
+SPEAKER_RAISED_DB = 23.0 + 20 * math.log10(1.8 / 1.67)
+LEVEL = 0.4 * 32767 * 10 ** (-SPEAKER_RAISED_DB / 20)
 
 
 def tone(freq, count):
