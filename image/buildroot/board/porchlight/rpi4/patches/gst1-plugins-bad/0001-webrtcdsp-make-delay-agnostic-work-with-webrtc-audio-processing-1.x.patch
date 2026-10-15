@@ -1,0 +1,154 @@
+From 72980b8121321bd1cdac0a0b71f997725a914603 Mon Sep 17 00:00:00 2001
+From: Israel Lior <israellior1@gmail.com>
+Date: Thu, 15 Oct 2026 08:14:27 +0300
+Subject: [PATCH] webrtcdsp: make delay-agnostic work with
+ webrtc-audio-processing 1.x
+
+With webrtc-audio-processing 1.x the delay-agnostic property was kept but
+ignored, so the echo probe always matched the played audio to the captured
+audio by running time. That needs the probe and the DSP in one pipeline,
+and even there it stops: on a Raspberry Pi with a WM8960 codec, playback
+and capture in one pipeline cancelled about 15 dB of echo for two to four
+seconds, then nothing, as the timestamps drifted past one 10 ms period and
+the probe handed the DSP silence. With the probe in a second pipeline - a
+call whose speaker starts only when somebody talks - it never cancelled at
+all: 4.3 dB removed with echo-cancel on, 4.6 with it off.
+
+AEC3 has its own delay estimator, so delay-agnostic now passes no capture
+time to the probe, and the probe hands over its played audio in order, at
+most four periods of it, dropping the oldest: the estimator can line up a
+reference that leads the echo, never one that trails it.
+---
+ ext/webrtcdsp/gstwebrtcdsp.cpp       |  9 +++--
+ ext/webrtcdsp/gstwebrtcechoprobe.cpp | 51 +++++++++++++++++++++-------
+ 2 files changed, 46 insertions(+), 14 deletions(-)
+
+diff --git a/ext/webrtcdsp/gstwebrtcdsp.cpp b/ext/webrtcdsp/gstwebrtcdsp.cpp
+index 18f808d..99d8af5 100644
+--- a/ext/webrtcdsp/gstwebrtcdsp.cpp
++++ b/ext/webrtcdsp/gstwebrtcdsp.cpp
+@@ -255,6 +255,7 @@ struct _GstWebrtcDsp
+   /* Properties */
+   gboolean high_pass_filter;
+   gboolean echo_cancel;
++  gboolean delay_agnostic;
+   gboolean noise_suppression;
+   webrtc::AudioProcessing::Config::NoiseSuppression::Level noise_suppression_level;
+   gboolean gain_control;
+@@ -375,8 +376,10 @@ gst_webrtc_dsp_analyze_reverse_stream (GstWebrtcDsp * self,
+   GstAudioBuffer abuf;
+   GstFlowReturn ret = GST_FLOW_OK;
+   gint err, delay;
++  gboolean agnostic;
+ 
+   GST_OBJECT_LOCK (self);
++  agnostic = self->delay_agnostic;
+   if (self->echo_cancel)
+     probe = GST_WEBRTC_ECHO_PROBE (g_object_ref (self->probe));
+   info = self->info;
+@@ -387,7 +390,8 @@ gst_webrtc_dsp_analyze_reverse_stream (GstWebrtcDsp * self,
+     return GST_FLOW_OK;
+ 
+   delay =
+-    gst_webrtc_echo_probe_read (probe, rec_time, &buf, &info, &interleaved);
++    gst_webrtc_echo_probe_read (probe,
++      agnostic ? GST_CLOCK_TIME_NONE : rec_time, &buf, &info, &interleaved);
+ 
+   apm = self->apm;
+   apm->set_stream_delay_ms (delay);
+@@ -762,6 +766,7 @@ gst_webrtc_dsp_set_property (GObject * object,
+     case PROP_EXTENDED_FILTER:
+       break;
+     case PROP_DELAY_AGNOSTIC:
++      self->delay_agnostic = g_value_get_boolean (value);
+       break;
+     case PROP_TARGET_LEVEL_DBFS:
+       self->target_level_dbfs = g_value_get_int (value);
+@@ -829,7 +834,7 @@ gst_webrtc_dsp_get_property (GObject * object,
+       g_value_set_boolean (value, false);
+       break;
+     case PROP_DELAY_AGNOSTIC:
+-      g_value_set_boolean (value, false);
++      g_value_set_boolean (value, self->delay_agnostic);
+       break;
+     case PROP_TARGET_LEVEL_DBFS:
+       g_value_set_int (value, self->target_level_dbfs);
+diff --git a/ext/webrtcdsp/gstwebrtcechoprobe.cpp b/ext/webrtcdsp/gstwebrtcechoprobe.cpp
+index 13d0fc6..13bf846 100644
+--- a/ext/webrtcdsp/gstwebrtcechoprobe.cpp
++++ b/ext/webrtcdsp/gstwebrtcechoprobe.cpp
+@@ -42,6 +42,12 @@ GST_DEBUG_CATEGORY_EXTERN (webrtc_dsp_debug);
+ 
+ #define MAX_ADAPTER_SIZE (1*1024*1024)
+ 
++/* Delay agnostic: the most played audio kept waiting for the canceller, in
++ * 10 ms periods. Older audio is dropped. The canceller's delay estimator
++ * can line up a reference that leads the echo, never one that trails it,
++ * and a queue left to grow makes the reference trail. */
++#define AGNOSTIC_MAX_PERIODS 4
++
+ static GstStaticPadTemplate gst_webrtc_echo_probe_sink_template =
+ GST_STATIC_PAD_TEMPLATE ("sink",
+     GST_PAD_SINK,
+@@ -312,6 +318,39 @@ gst_webrtc_echo_probe_read (GstWebrtcEchoProbe * self, GstClockTime rec_time,
+ 
+   GST_WEBRTC_ECHO_PROBE_LOCK (self);
+ 
++  /* Delay agnostic: no capture time to match against. Hand over the oldest
++   * 10 ms played, first in first out, and leave the alignment to the
++   * canceller's own delay estimator. Neither the probe's latency nor any
++   * timestamp is used, so the probe may be in another pipeline. */
++  if (!GST_CLOCK_TIME_IS_VALID (rec_time)) {
++    gsize max_samples;
++
++    if (!GST_AUDIO_INFO_IS_VALID (&self->info))
++      goto copy;
++    *info = self->info;
++    *interleaved = self->interleaved;
++
++    max_samples = AGNOSTIC_MAX_PERIODS * self->period_samples;
++    if (self->interleaved) {
++      avail = gst_adapter_available (self->adapter) / self->info.bpf;
++      if (avail > max_samples)
++        gst_adapter_flush (self->adapter,
++            (avail - max_samples) * self->info.bpf);
++    } else {
++      avail = gst_planar_audio_adapter_available (self->padapter);
++      if (avail > max_samples)
++        gst_planar_audio_adapter_flush (self->padapter, avail - max_samples);
++    }
++    avail = MIN (avail, max_samples);
++
++    if (avail >= self->period_samples) {
++      size = self->period_samples;
++      skip = 0;
++      offset = 0;
++    }
++    goto copy;
++  }
++
+   /* We always return a buffer -- if don't have data (size == 0), we generate a
+    * silence buffer */
+ 
+@@ -331,18 +370,6 @@ gst_webrtc_echo_probe_read (GstWebrtcEchoProbe * self, GstClockTime rec_time,
+   else
+     avail = gst_planar_audio_adapter_available (self->padapter);
+ 
+-  /* In delay agnostic mode, just return 10ms of data */
+-  if (!GST_CLOCK_TIME_IS_VALID (rec_time)) {
+-    if (avail < self->period_samples)
+-      goto copy;
+-
+-    size = self->period_samples;
+-    skip = 0;
+-    offset = 0;
+-
+-    goto copy;
+-  }
+-
+   if (avail == 0) {
+     diff = G_MAXINT64;
+   } else {
+-- 
+2.43.0
+
