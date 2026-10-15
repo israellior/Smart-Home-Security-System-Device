@@ -1,0 +1,26 @@
+[Unit]
+Description=Porchlight update: download, install, restart
+Documentation=file:/usr/local/lib/porchlight/porchlight-update.py
+After=porchlight-data.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/porchlight/porchlight-update.py
+
+# The script removes the request as it reads it. This makes sure it is gone
+# even if the script never got that far, or the path unit would start this
+# again and again until systemd's start limit stopped it.
+ExecStopPost=/bin/rm -f /data/update/request.json
+
+# Root, deliberately: `rauc install` and the reboot are root's. It accepts
+# nothing a bundle signature does not vouch for - see the script.
+User=root
+
+# A download of ~90 MB and a slot write, on a device that is also a doorbell.
+# Behind everything else, so a ring during an update still rings.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=45min
+
+StandardOutput=journal
+StandardError=journal

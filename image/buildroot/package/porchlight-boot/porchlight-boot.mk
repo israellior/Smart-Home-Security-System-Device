@@ -24,16 +24,24 @@ define PORCHLIGHT_BOOT_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/local/lib/porchlight/porchlight-setup.py
 	$(INSTALL) -D -m 0755 $(@D)/server-bridge.py \
 		$(TARGET_DIR)/usr/local/lib/porchlight/server-bridge.py
+	$(INSTALL) -D -m 0755 $(@D)/porchlight-update.py \
+		$(TARGET_DIR)/usr/local/lib/porchlight/porchlight-update.py
 endef
 
 # Installing a unit is enough to enable it: Buildroot runs systemctl preset-all
 # at the end of the build, and its preset enables every unit with an [Install]
-# section. Both units say WantedBy=multi-user.target.
+# section. Every unit here says WantedBy=multi-user.target - the update
+# service included, through its path unit: the service has no [Install] of its
+# own because only a request should ever start it.
 define PORCHLIGHT_BOOT_INSTALL_INIT_SYSTEMD
 	$(INSTALL) -D -m 0644 $(@D)/systemd/porchlight-firstboot.service \
 		$(TARGET_DIR)/usr/lib/systemd/system/porchlight-firstboot.service
 	$(INSTALL) -D -m 0644 $(@D)/systemd/porchlight-setup.service \
 		$(TARGET_DIR)/usr/lib/systemd/system/porchlight-setup.service
+	$(INSTALL) -D -m 0644 $(@D)/systemd/porchlight-update.path \
+		$(TARGET_DIR)/usr/lib/systemd/system/porchlight-update.path
+	$(INSTALL) -D -m 0644 $(@D)/systemd/porchlight-update.service \
+		$(TARGET_DIR)/usr/lib/systemd/system/porchlight-update.service
 endef
 
 $(eval $(generic-package))

@@ -93,8 +93,10 @@ def main():
     metadata["bytes"] = os.path.getsize(clip)
 
     try:
+        # The size is signed into the grant, so the bucket takes exactly this
+        # file and nothing larger. The server will come to require it.
         grant = request_json(f"{base}/api/clips/{event_id}/upload-url", credential,
-                             payload={}, method="POST")
+                             payload={"bytes": metadata["bytes"]}, method="POST")
     except urllib.error.HTTPError as error:
         fail(f"step 1 failed: HTTP {error.code} {error.read().decode(errors='replace')}")
     except urllib.error.URLError as error:

@@ -155,6 +155,47 @@ Nothing comes back. The server keeps the last reading in memory for as long as
 the socket is up, forgets it when the socket goes, and ignores reports that
 arrive less than 5 s apart.
 
+### Software updates — both ways, on the WebSocket
+
+The hello says what the device is running and whether it can update:
+
+```json
+{ "type": "hello", "role": "device", "deviceId": "porch-2", "token": "…",
+  "version": "release-14", "updater": true }
+```
+
+`version` is the `bundle.version` RAUC recorded for the booted slot — the
+`version=` in the bundle's manifest — and `null` for the system flashed at the
+factory. `updater` is true only on our image with `porchlight-update.py`
+installed and `/data/update` writable. **A device that says nothing, or false,
+is never sent an update**: a bridge from before this ignores the frame.
+
+The server asks for one with:
+
+```json
+{ "type": "update", "version": "release-15",
+  "url": "https://…/releases/release-15.raucb?X-Amz-…", "bytes": 92461608, "sha256": "…" }
+```
+
+The bridge runs as `porchlight` and cannot install anything. It writes the
+request to `/data/update/request.json`; `porchlight-update.path` starts the
+root `porchlight-update.service`, which downloads, checks size and hash, runs
+`rauc install` and reboots. Its progress goes to `/data/update/status.json`,
+which the bridge relays:
+
+```json
+{ "type": "update-status", "version": "release-15", "state": "downloading", "progress": 0.4 }
+```
+
+`state` is `downloading`, `installing`, `rebooting`, or `failed` with an
+`error` in words. Nothing reports success or rollback directly: the server
+reads both from the next hello's `version`. The new version is a trial until
+the rollback window has passed; the old version after `rebooting`, or during
+the trial, is a rollback, and that release is not offered automatically again.
+
+A request cannot make the device install anything RAUC would not: the bundle
+must be signed by the key whose certificate is in the image.
+
 ### Clip upload
 
 **Changed from the first issue of this brief.** The device's uploader was not

@@ -17,10 +17,14 @@ hello, and relays JSON lines both ways.
                         {"type":"viewer-requested","peer":7}
 
     bridge --> server   {"type":"link","rssi":-61}
+    server --> bridge   {"type":"update","version":...,"url":...,"bytes":...,"sha256":...}
+    bridge --> server   {"type":"update-status","version":...,"state":...,"progress":...}
 
-The last one is the bridge's own and never passes through the daemon: it is
-the Wi-Fi signal, for the app to show, and the bridge is the process that is
-on the network. See read_rssi.
+Those three are the bridge's own and never pass through the daemon. The first
+is the Wi-Fi signal, for the app to show (see read_rssi). The other two are a
+software update: the bridge cannot install one - it runs as `porchlight`, not
+root - so it hands the request to porchlight-update.py through /data/update and
+relays what that reports. See start_update.
 
 There is no enrolment. The credential is written onto the SD card when the
 device is built; this only ever reads it.
@@ -43,8 +47,11 @@ diagnosed as "the daemon just sits there".
 """
 
 import argparse
+import configparser
 import json
+import os
 import random
+import re
 import sys
 import threading
 import time
@@ -91,13 +98,72 @@ WIRELESS_STATS = "/proc/net/wireless"
 _UNSENT = object()
 
 
+# Software updates. The request and status files are the whole interface to
+# the root updater - see porchlight-update.py for the other side.
+UPDATE_DIR = "/data/update"
+UPDATE_REQUEST = os.path.join(UPDATE_DIR, "request.json")
+UPDATE_STATUS = os.path.join(UPDATE_DIR, "status.json")
+UPDATER = "/usr/local/lib/porchlight/porchlight-update.py"
+RAUC_STATUS = "/data/rauc/central.raucs"
+RAUC_SECTIONS = {"A": "slot.rootfs.0", "B": "slot.rootfs.1"}
+
+# How often the updater's status file is read while an update runs, and how
+# long before the bridge stops watching one that never finishes. The server
+# gives up on its own after 45 minutes of silence.
+UPDATE_POLL = 2.0
+UPDATE_WATCH_LIMIT = 60 * 60
+
+
+def booted_slot():
+    """A or B, from the kernel command line U-Boot wrote, or None off our image."""
+    try:
+        with open("/proc/cmdline") as handle:
+            found = re.search(r"\brauc\.slot=([AB])\b", handle.read())
+    except OSError:
+        return None
+    return found.group(1) if found else None
+
+
+def installed_version():
+    """The version of the release this system came from, as RAUC recorded it
+    when it installed the bundle - the `version=` in the bundle's manifest.
+
+    None for the system flashed at the factory, which RAUC never installed and
+    so has no record of, and for any device not on our image. The server
+    treats None as "behind", so a factory doorbell is brought to the latest
+    release like any other."""
+    slot = booted_slot()
+    if slot is None:
+        return None
+    status = configparser.ConfigParser(interpolation=None)
+    try:
+        status.read(RAUC_STATUS)
+    except (OSError, configparser.Error):
+        return None
+    return status.get(RAUC_SECTIONS[slot], "bundle.version", fallback=None) or None
+
+
+def can_update():
+    """Whether this device can take an update: our image (RAUC slots), the
+    updater installed, and the request directory writable by us. A Raspberry
+    Pi OS unit set up by provision.sh has none of these, and says so."""
+    return (booted_slot() is not None and os.path.exists(UPDATER)
+            and os.access(UPDATE_DIR, os.W_OK))
+
+
 def hello_frame(device_id, credential):
-    """Said first on every connection, by the bridge and by --probe alike."""
+    """Said first on every connection, by the bridge and by --probe alike.
+
+    It carries what this device is running, so the server learns how an
+    update went from the hello after the restart - including a rollback,
+    which nothing on the device ever reports in so many words."""
     return {
         "type": "hello",
         "role": HELLO_ROLE,
         "deviceId": device_id,
         "token": credential,
+        "version": installed_version(),
+        "updater": can_update(),
     }
 
 
@@ -303,6 +369,9 @@ class Bridge:
         # Set on hello-ok, so a new connection reports at once instead of up
         # to half a minute later.
         self.link_wake = threading.Event()
+        # The update being watched, if any. One at a time: the server never
+        # offers a second while one is in flight, and this holds to it too.
+        self.update_watch = None
 
     def run(self):
         threading.Thread(target=self.read_stdin, daemon=True).start()
@@ -382,6 +451,8 @@ class Bridge:
             _socket.close()
         elif kind in ("event-ack", "viewer-requested"):
             emit(message)
+        elif kind == "update":
+            self.start_update(message)
         elif kind == "ping":
             self.send({"type": "pong"})
         elif kind == "replaced":
@@ -443,6 +514,68 @@ class Bridge:
                     self.link_sent = rssi
             self.link_wake.wait(LINK_SAMPLE_INTERVAL)
             self.link_wake.clear()
+
+    def start_update(self, message):
+        """Hands an update request to the root updater, and watches it.
+
+        Written atomically - a temporary name, then a rename - because the
+        path unit fires the moment request.json exists, and must never see
+        half of one."""
+        version = message.get("version")
+        if not isinstance(version, str):
+            return
+        if not can_update():
+            self.send({"type": "update-status", "version": version, "state": "failed",
+                       "error": "This doorbell cannot install updates"})
+            return
+        if self.update_watch is not None and self.update_watch.is_alive():
+            note(f"update to {version} asked for while one is running; ignored")
+            return
+
+        request = {key: message.get(key) for key in ("version", "url", "bytes", "sha256")}
+        tmp = UPDATE_REQUEST + ".tmp"
+        try:
+            with open(tmp, "w") as handle:
+                json.dump(request, handle)
+            os.replace(tmp, UPDATE_REQUEST)
+        except OSError as error:
+            note(f"could not hand over the update: {error}")
+            self.send({"type": "update-status", "version": version, "state": "failed",
+                       "error": "The doorbell could not start the update"})
+            return
+
+        note(f"update to {version} handed to the updater")
+        self.update_watch = threading.Thread(target=self.watch_update, args=(version, time.time()),
+                                             daemon=True)
+        self.update_watch.start()
+
+    def watch_update(self, version, since):
+        """Relays the updater's status file until it ends: failed, or about to
+        restart. Only statuses for this version written after the request
+        count - the file still holds the last update's ending until the new
+        one starts."""
+        last = None
+        deadline = time.time() + UPDATE_WATCH_LIMIT
+        while time.time() < deadline and not self.stop:
+            time.sleep(UPDATE_POLL)
+            try:
+                with open(UPDATE_STATUS) as handle:
+                    status = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            if status.get("version") != version or status.get("at", 0) < since:
+                continue
+            state = status.get("state")
+            frame = {"type": "update-status", "version": version, "state": state}
+            if isinstance(status.get("progress"), (int, float)):
+                frame["progress"] = status["progress"]
+            if status.get("error"):
+                frame["error"] = status["error"]
+            key = (state, frame.get("progress"))
+            if key != last and self.send(frame):
+                last = key
+            if state in ("failed", "rebooting") and last == key:
+                return
 
     def read_stdin(self):
         """Lines from the daemon. EOF means the daemon is gone; so are we."""

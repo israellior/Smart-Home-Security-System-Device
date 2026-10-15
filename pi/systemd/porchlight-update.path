@@ -1,0 +1,12 @@
+[Unit]
+Description=Porchlight update: wait for the bridge to ask for one
+Documentation=file:/usr/local/lib/porchlight/porchlight-update.py
+
+# The bridge runs as `porchlight` and cannot install or reboot. It writes a
+# request here instead, and this starts the root service that can.
+[Path]
+PathExists=/data/update/request.json
+Unit=porchlight-update.service
+
+[Install]
+WantedBy=multi-user.target

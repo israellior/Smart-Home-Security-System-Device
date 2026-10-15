@@ -16,6 +16,15 @@ mkdir -p /data/porchlight /data/dropbear /data/rauc
 mkdir -p -m 0700 /data/NetworkManager/system-connections
 chmod 0755 /data/porchlight
 
+# Software updates: the bridge, as porchlight, writes a request here and reads
+# the updater's status back; the updater, as root, does the work. Group-
+# writable for exactly that, and nobody else's. RAUC's own directory is made
+# readable so the bridge can report which release this system came from.
+mkdir -p /data/update
+chown root:porchlight /data/update
+chmod 0770 /data/update
+chmod 0755 /data/rauc
+
 # The system log, so a boot that goes wrong leaves its account behind for the
 # next one to read. journald holds early messages in RAM until
 # systemd-journal-flush moves them to /var/log/journal, and that service is
