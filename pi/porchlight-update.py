@@ -25,6 +25,7 @@ learns which happened from the version the doorbell reports when it is back.
 """
 
 import argparse
+import grp
 import hashlib
 import json
 import os
@@ -63,12 +64,29 @@ def note(text):
     sys.stderr.flush()
 
 
+# The bridge's group. The file is written by root, and a file root creates
+# belongs to group root - which the bridge, as porchlight, cannot read. That
+# was release-15: the update worked and not one step of its progress reached
+# the app.
+BRIDGE_GROUP = "porchlight"
+
+
+def bridge_gid():
+    try:
+        return grp.getgrnam(BRIDGE_GROUP).gr_gid
+    except KeyError:
+        return None
+
+
 def write_status(version, state, **extra):
-    """Atomically, and readable by the bridge's group (the directory is 0770)."""
+    """Atomically, and readable by the bridge: group porchlight, mode 0640."""
     body = {"version": version, "state": state, "at": time.time(), **extra}
     tmp = STATUS + ".tmp"
     with open(tmp, "w") as handle:
         json.dump(body, handle)
+    gid = bridge_gid()
+    if gid is not None:
+        os.chown(tmp, -1, gid)
     os.chmod(tmp, 0o640)
     os.replace(tmp, STATUS)
 
@@ -226,7 +244,10 @@ def main():
     # Long enough for the bridge, which polls every two seconds, to tell the
     # server before the network goes.
     time.sleep(6)
-    subprocess.run(["systemctl", "reboot"])
+    # --no-block, and then out: waiting on the reboot from inside a service
+    # meant shutdown stopped this service mid-wait, and every successful
+    # update was logged as porchlight-update.service failing on a signal.
+    subprocess.run(["systemctl", "--no-block", "reboot"])
     return 0
 
 

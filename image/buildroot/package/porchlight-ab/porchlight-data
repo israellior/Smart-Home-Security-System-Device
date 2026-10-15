@@ -22,7 +22,9 @@ chmod 0755 /data/porchlight
 # readable so the bridge can report which release this system came from.
 mkdir -p /data/update
 chown root:porchlight /data/update
-chmod 0770 /data/update
+# setgid, so anything created here belongs to porchlight whoever writes it -
+# the updater sets the group on its status file too; this is the backstop.
+chmod 2770 /data/update
 chmod 0755 /data/rauc
 
 # The system log, so a boot that goes wrong leaves its account behind for the
