@@ -1,0 +1,12 @@
+[Unit]
+Description=Porchlight wi-fi: wait for the bridge to ask for a change
+Documentation=file:/usr/local/lib/porchlight/porchlight-wifi.py
+
+# The bridge runs as `porchlight` and cannot change networks. It writes a
+# request here instead, and this starts the root service that can.
+[Path]
+PathExists=/data/wifi/request.json
+Unit=porchlight-wifi.service
+
+[Install]
+WantedBy=multi-user.target

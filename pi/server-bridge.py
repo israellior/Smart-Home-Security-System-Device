@@ -16,15 +16,17 @@ hello, and relays JSON lines both ways.
                         {"type":"event-ack","eventId":...,"kind":...,"ok":...}
                         {"type":"viewer-requested","peer":7}
 
-    bridge --> server   {"type":"link","rssi":-61}
+    bridge --> server   {"type":"link","rssi":-61,"ssid":"HomeNet"}
     server --> bridge   {"type":"update","version":...,"url":...,"bytes":...,"sha256":...}
     bridge --> server   {"type":"update-status","version":...,"state":...,"progress":...}
+    server --> bridge   {"type":"wifi-scan"}  {"type":"wifi-join","id":...,"ssid":...,"psk":...}
+    bridge --> server   {"type":"wifi-networks",...}  {"type":"wifi-status","id":...,"state":...}
 
-Those three are the bridge's own and never pass through the daemon. The first
-is the Wi-Fi signal, for the app to show (see read_rssi). The other two are a
-software update: the bridge cannot install one - it runs as `porchlight`, not
-root - so it hands the request to porchlight-update.py through /data/update and
-relays what that reports. See start_update.
+Those are the bridge's own and never pass through the daemon. The first is the
+Wi-Fi signal and network, for the app to show (see read_rssi). The rest are
+things only root can do - install an update, change networks - so the bridge,
+which runs as `porchlight`, hands each to a root helper through a directory on
+/data and relays what it reports. See start_update and start_wifi.
 
 There is no enrolment. The credential is written onto the SD card when the
 device is built; this only ever reads it.
@@ -52,6 +54,7 @@ import json
 import os
 import random
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -107,6 +110,20 @@ UPDATER = "/usr/local/lib/porchlight/porchlight-update.py"
 RAUC_STATUS = "/data/rauc/central.raucs"
 RAUC_SECTIONS = {"A": "slot.rootfs.0", "B": "slot.rootfs.1"}
 
+# Changing wi-fi from the app - porchlight-wifi.py is the other side.
+WIFI_DIR = "/data/wifi"
+WIFI_REQUEST = os.path.join(WIFI_DIR, "request.json")
+WIFI_STATUS = os.path.join(WIFI_DIR, "status.json")
+WIFI_NETWORKS = os.path.join(WIFI_DIR, "networks.json")
+WIFI_HELPER = "/usr/local/lib/porchlight/porchlight-wifi.py"
+SETUP_SSID = os.path.join(WIFI_DIR, "setup-ssid")
+
+# A scan takes a few seconds; a change can take minutes - three join attempts
+# fifteen seconds apart, the staged check, and a fall back if it fails - and
+# its result has to wait for this socket to come back on whichever network won.
+WIFI_SCAN_LIMIT = 60
+WIFI_JOIN_LIMIT = 8 * 60
+
 # How often the updater's status file is read while an update runs, and how
 # long before the bridge stops watching one that never finishes. The server
 # gives up on its own after 45 minutes of silence.
@@ -151,6 +168,37 @@ def can_update():
             and os.access(UPDATE_DIR, os.W_OK))
 
 
+def can_change_wifi():
+    """Whether this device has the wi-fi helper, and we can ask it things."""
+    return os.path.exists(WIFI_HELPER) and os.access(WIFI_DIR, os.W_OK)
+
+
+def setup_ssid():
+    """The name of the network this doorbell raises when it has none, so the
+    app can say which one to join - the one time it is needed, the doorbell
+    is offline and cannot be asked. Copied out of the identity at boot."""
+    try:
+        with open(SETUP_SSID) as handle:
+            return handle.read().strip() or None
+    except OSError:
+        return None
+
+
+def current_ssid():
+    """The network the doorbell is on, from NetworkManager's own list - which
+    an unprivileged user may read. None off wi-fi, or with no nmcli."""
+    try:
+        done = subprocess.run(["nmcli", "-t", "-f", "ACTIVE,SSID", "device", "wifi"],
+                              capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for row in done.stdout.splitlines():
+        active, _, ssid = row.partition(":")
+        if active == "yes" and ssid:
+            return ssid.replace("\\:", ":")
+    return None
+
+
 def hello_frame(device_id, credential):
     """Said first on every connection, by the bridge and by --probe alike.
 
@@ -164,6 +212,8 @@ def hello_frame(device_id, credential):
         "token": credential,
         "version": installed_version(),
         "updater": can_update(),
+        "wifi": can_change_wifi(),
+        "setupSsid": setup_ssid(),
     }
 
 
@@ -372,6 +422,7 @@ class Bridge:
         # The update being watched, if any. One at a time: the server never
         # offers a second while one is in flight, and this holds to it too.
         self.update_watch = None
+        self.wifi_watch = None
 
     def run(self):
         threading.Thread(target=self.read_stdin, daemon=True).start()
@@ -453,6 +504,11 @@ class Bridge:
             emit(message)
         elif kind == "update":
             self.start_update(message)
+        elif kind == "wifi-scan":
+            self.start_wifi({"action": "scan"})
+        elif kind == "wifi-join":
+            self.start_wifi({"action": "join", "id": message.get("id"),
+                             "ssid": message.get("ssid"), "psk": message.get("psk")})
         elif kind == "ping":
             self.send({"type": "pong"})
         elif kind == "replaced":
@@ -504,14 +560,17 @@ class Bridge:
         while not self.stop:
             if self.ready:
                 rssi = read_rssi()
+                ssid = current_ssid()
                 last = self.link_sent
+                last_rssi, last_ssid = (None, None) if last is _UNSENT else last
                 moved = (
                     last is _UNSENT
-                    or (rssi is None) != (last is None)
-                    or (rssi is not None and abs(rssi - last) >= LINK_REPORT_STEP)
+                    or ssid != last_ssid
+                    or (rssi is None) != (last_rssi is None)
+                    or (rssi is not None and abs(rssi - last_rssi) >= LINK_REPORT_STEP)
                 )
-                if moved and self.send({"type": "link", "rssi": rssi}):
-                    self.link_sent = rssi
+                if moved and self.send({"type": "link", "rssi": rssi, "ssid": ssid}):
+                    self.link_sent = (rssi, ssid)
             self.link_wake.wait(LINK_SAMPLE_INTERVAL)
             self.link_wake.clear()
 
@@ -575,6 +634,81 @@ class Bridge:
             if key != last and self.send(frame):
                 last = key
             if state in ("failed", "rebooting") and last == key:
+                return
+
+    def start_wifi(self, request):
+        """Hands a scan or a change to the root wi-fi helper, and watches it.
+
+        The request can carry a wi-fi password, so it is written for its
+        owner's group alone and the helper deletes it as it reads it."""
+        action = request["action"]
+        if not can_change_wifi():
+            if action == "join":
+                self.send({"type": "wifi-status", "id": request.get("id"), "state": "failed",
+                           "error": "This doorbell needs an update before it can change networks."})
+            return
+        if self.wifi_watch is not None and self.wifi_watch.is_alive():
+            note(f"wi-fi {action} asked for while one is running; ignored")
+            return
+
+        since = time.time()
+        tmp = WIFI_REQUEST + ".tmp"
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(request, handle)
+            os.replace(tmp, WIFI_REQUEST)
+        except OSError as error:
+            note(f"could not hand over the wi-fi {action}: {error}")
+            if action == "join":
+                self.send({"type": "wifi-status", "id": request.get("id"), "state": "failed",
+                           "error": "The doorbell could not start the change."})
+            return
+
+        note(f"wi-fi {action} handed to the helper")
+        target = self.watch_wifi_scan if action == "scan" else self.watch_wifi_join
+        args = (since,) if action == "scan" else (request.get("id"), since)
+        self.wifi_watch = threading.Thread(target=target, args=args, daemon=True)
+        self.wifi_watch.start()
+
+    def watch_wifi_scan(self, since):
+        deadline = time.time() + WIFI_SCAN_LIMIT
+        while time.time() < deadline and not self.stop:
+            time.sleep(UPDATE_POLL)
+            try:
+                with open(WIFI_NETWORKS) as handle:
+                    found = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            if found.get("at", 0) < since:
+                continue
+            self.send({"type": "wifi-networks", "networks": found.get("networks", []),
+                       "current": found.get("current")})
+            return
+
+    def watch_wifi_join(self, request_id, since):
+        """Relays joining, then the outcome. The outcome is sent until it lands:
+        by then this socket has dropped with the old network and come back on
+        whichever one won, and an outcome nobody hears leaves the app waiting."""
+        last = None
+        deadline = time.time() + WIFI_JOIN_LIMIT
+        while time.time() < deadline and not self.stop:
+            time.sleep(UPDATE_POLL)
+            try:
+                with open(WIFI_STATUS) as handle:
+                    status = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            if status.get("id") != request_id or status.get("at", 0) < since:
+                continue
+            state = status.get("state")
+            frame = {"type": "wifi-status", "id": request_id, "state": state,
+                     "ssid": status.get("ssid"), "previous": status.get("previous")}
+            if status.get("error"):
+                frame["error"] = status["error"]
+            if state != last and self.send(frame):
+                last = state
+            if state in ("connected", "failed") and last == state:
                 return
 
     def read_stdin(self):

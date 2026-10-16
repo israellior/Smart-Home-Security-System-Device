@@ -26,6 +26,8 @@ define PORCHLIGHT_BOOT_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/local/lib/porchlight/server-bridge.py
 	$(INSTALL) -D -m 0755 $(@D)/porchlight-update.py \
 		$(TARGET_DIR)/usr/local/lib/porchlight/porchlight-update.py
+	$(INSTALL) -D -m 0755 $(@D)/porchlight-wifi.py \
+		$(TARGET_DIR)/usr/local/lib/porchlight/porchlight-wifi.py
 endef
 
 # Installing a unit is enough to enable it: Buildroot runs systemctl preset-all
@@ -42,6 +44,10 @@ define PORCHLIGHT_BOOT_INSTALL_INIT_SYSTEMD
 		$(TARGET_DIR)/usr/lib/systemd/system/porchlight-update.path
 	$(INSTALL) -D -m 0644 $(@D)/systemd/porchlight-update.service \
 		$(TARGET_DIR)/usr/lib/systemd/system/porchlight-update.service
+	$(INSTALL) -D -m 0644 $(@D)/systemd/porchlight-wifi.path \
+		$(TARGET_DIR)/usr/lib/systemd/system/porchlight-wifi.path
+	$(INSTALL) -D -m 0644 $(@D)/systemd/porchlight-wifi.service \
+		$(TARGET_DIR)/usr/lib/systemd/system/porchlight-wifi.service
 endef
 
 $(eval $(generic-package))

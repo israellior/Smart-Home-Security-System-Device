@@ -1,0 +1,22 @@
+[Unit]
+Description=Porchlight wi-fi: scan, or move to another network and fall back
+Documentation=file:/usr/local/lib/porchlight/porchlight-wifi.py
+After=porchlight-data.service NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/porchlight/porchlight-wifi.py
+
+# The script removes the request as it reads it - it can hold a wi-fi
+# password. This makes sure it is gone even if the script never got that far.
+ExecStopPost=/bin/rm -f /data/wifi/request.json
+
+# Root, deliberately: NetworkManager's changes are root's.
+User=root
+
+# Three join attempts fifteen seconds apart, the staged check, and a fall
+# back to the old network if any of it fails.
+TimeoutStartSec=6min
+
+StandardOutput=journal
+StandardError=journal

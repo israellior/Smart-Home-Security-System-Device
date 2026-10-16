@@ -196,6 +196,34 @@ the trial, is a rollback, and that release is not offered automatically again.
 A request cannot make the device install anything RAUC would not: the bundle
 must be signed by the key whose certificate is in the image.
 
+### Wi-Fi — changing networks from the app
+
+The `link` frame also carries `"ssid"`, the network the device is on. The
+hello adds `"wifi": true` when `porchlight-wifi.py` is installed, and
+`"setupSsid"`, the name of the network the device raises when it has none -
+the server keeps it, because the one time the app needs it the device is
+offline.
+
+```json
+{ "type": "wifi-scan" }
+{ "type": "wifi-join", "id": "…", "ssid": "HomeNet", "psk": "…" }
+```
+
+The bridge hands each to the root `porchlight-wifi.service` through
+`/data/wifi`, and answers:
+
+```json
+{ "type": "wifi-networks", "networks": [{ "ssid": "HomeNet", "signal": 80, "secure": true }], "current": "OldNet" }
+{ "type": "wifi-status", "id": "…", "state": "joining", "ssid": "HomeNet", "previous": "OldNet" }
+```
+
+`state` ends as `connected` or `failed` with an `error` in words. **The device
+keeps its old network until the new one has reached the server** - the same
+staged check as the setup page - and goes back to it otherwise, so a wrong
+password typed in the app cannot strand it. The outcome is sent after the
+socket comes back on whichever network won. The password is never stored:
+the request file holding it is deleted as it is read.
+
 ### Clip upload
 
 **Changed from the first issue of this brief.** The device's uploader was not
