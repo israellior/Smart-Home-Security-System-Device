@@ -199,12 +199,17 @@ void add_detector(std::vector<std::string>& args, const DetectConfig& detect) {
 // The camera's second stream, at the sensor mode's own 2304x1296, for faces:
 // a face a metre from the door is about 155 pixels wide here and about 45 in
 // the recording, which is too few to tell anyone apart. Nothing reads it
-// until the detector has found a person, so the appsink keeps one frame and
-// drops the rest, and none of them is ever mapped or copied.
+// until the detector has found a person, and then only a frame or three.
 //
 // Its own queue first, and that is not tidiness: libcamerasrc pushes both
 // streams from one thread, and a branch without a queue holds the pipeline in
 // PAUSED - no frame on either pad, no error either.
+//
+// And a fakesink, not an appsink. An appsink will not pass EOS while it holds
+// a frame nobody has pulled - and this one is pulled only after a person - so
+// on porch-2 every recording with it hung at the stop until the daemon killed
+// it, and every clip was lost. A fakesink never holds up EOS, and its
+// last-sample is the newest frame, read when it is wanted.
 void add_details(std::vector<std::string>& args) {
   args.push_back(std::format("{}.src_0", kCameraName));
   args.push_back("!");
@@ -216,11 +221,10 @@ void add_details(std::vector<std::string>& args) {
   args.push_back("max-size-bytes=0");
   args.push_back("max-size-time=0");
   args.push_back("!");
-  args.push_back("appsink");
+  args.push_back("fakesink");
   args.push_back("name=detail");
-  args.push_back("drop=true");
-  args.push_back("max-buffers=1");
   args.push_back("sync=false");
+  args.push_back("enable-last-sample=true");
 }
 
 }  // namespace

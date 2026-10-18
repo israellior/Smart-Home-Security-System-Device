@@ -218,6 +218,23 @@ TEST(Pipeline, FacesAddTheCamerasSecondStreamBehindItsOwnQueue) {
   EXPECT_TRUE(has(args, "name=detail"));
 }
 
+// An appsink holding a frame nobody pulled will not pass EOS, and this branch
+// is read only after a person: in release-20 every recording with faces on
+// hung at its stop and was killed, clip and all. Only the detector's appsink,
+// which is drained continuously, may be one.
+TEST(Pipeline, TheFaceStreamCanNeverHoldUpTheStop) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 8s);
+  const auto pad = std::find(args.begin(), args.end(), std::string{"camera.src_0"});
+  ASSERT_NE(pad, args.end());
+  const std::vector<std::string> branch(pad, args.end());
+  EXPECT_FALSE(has(branch, "appsink"));
+  EXPECT_TRUE(has(branch, "fakesink"));
+  EXPECT_TRUE(has(branch, "enable-last-sample=true"));
+  EXPECT_EQ(std::count(args.begin(), args.end(), std::string{"appsink"}), 1);
+}
+
 // No person, no face: without detection the second stream would cost the
 // camera's bandwidth for nothing, and the test source has no second pad.
 TEST(Pipeline, FacesNeedDetectionAndTheCamera) {

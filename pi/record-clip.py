@@ -42,8 +42,9 @@ alert. Nothing the detector does can fail the recording: it is a thread that
 gets a copy of the frames, and any exception in it becomes "unknown".
 
 --faces-store adds who, once it is a person: the face is looked for in the
-camera's full-resolution stream - an appsink named "detail" on a second pad of
-libcamerasrc - matched against the saved faces, and the person line carries
+camera's full-resolution stream - the last sample of a fakesink named "detail"
+on a second pad of libcamerasrc, never an appsink, which would hold up the stop
+- matched against the saved faces, and the person line carries
 
   "faces": [{"person": "<id>" | null, "score": 0.71}]
 
@@ -471,13 +472,16 @@ class FaceStage:
         if not self.store.people:
             return None  # nobody saved: nothing a face could be matched to
         at_least, margin = self.options.face_match / 100, self.options.face_margin / 100
-        best, sizes = None, []
-        for _ in range(self.TRIES):
-            if time.monotonic() >= deadline:
-                break
-            sample = self.sink.emit("try-pull-sample", int(0.3 * Gst.SECOND))
-            if sample is None:
+        best, sizes, looked = None, [], set()
+        while len(looked) < self.TRIES and time.monotonic() < deadline:
+            # The fakesink's newest frame. The same one twice says nothing
+            # new, so wait for the next rather than code it again.
+            sample = self.sink.get_property("last-sample")
+            stamp = sample.get_buffer().pts if sample is not None else None
+            if sample is None or stamp in looked:
+                time.sleep(0.05)
                 continue
+            looked.add(stamp)
             structure = sample.get_caps().get_structure(0)
             width, height = structure.get_value("width"), structure.get_value("height")
             buffer = sample.get_buffer()
@@ -528,7 +532,7 @@ def attach_detector(pipeline, options, started):
     if options.faces_store:
         detail = pipeline.get_by_name("detail")
         if detail is None:
-            note("faces: the pipeline has no appsink named detail; faces not looked at")
+            note("faces: the pipeline has no sink named detail; faces not looked at")
         else:
             faces = FaceStage(options, detail)
     detector = Detector(options, started, faces)
@@ -622,7 +626,7 @@ def main():
                         help="bright frames judged before no-person is believed")
     detect.add_argument("--detect-bench", action="store_true",
                         help="no camera, no pipeline: load the model, time it, exit")
-    faces = parser.add_argument_group("faces, after a person (needs an appsink named detail)")
+    faces = parser.add_argument_group("faces, after a person (needs a fakesink named detail)")
     faces.add_argument("--faces-store", help="the saved faces; turns face matching on")
     faces.add_argument("--faces-module",
                        default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
