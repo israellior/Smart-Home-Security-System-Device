@@ -1,0 +1,24 @@
+config BR2_PACKAGE_PORCHLIGHT_DETECT
+	bool "porchlight-detect"
+	# The detector is a thread inside record-clip.py, fed from the recorder's
+	# own pipeline, so it has nothing to run in without the recorder.
+	depends on BR2_PACKAGE_PORCHLIGHT_RECORDER
+	depends on BR2_aarch64
+	depends on BR2_TOOLCHAIN_USES_GLIBC
+	depends on BR2_PACKAGE_PYTHON_NUMPY_ARCH_SUPPORTS
+	depends on BR2_INSTALL_LIBSTDCPP
+	depends on BR2_TOOLCHAIN_GCC_AT_LEAST_9
+	select BR2_PACKAGE_PYTHON_AI_EDGE_LITERT
+	# videorate, on the detector's branch; videoscale comes with
+	# videoconvertscale and appsink with app, which the recorder and the
+	# call already ask for.
+	select BR2_PACKAGE_GST1_PLUGINS_BASE_PLUGIN_VIDEORATE
+	select BR2_PACKAGE_GST1_PLUGINS_BASE_PLUGIN_APP
+	help
+	  The person detector's model: COCO SSD MobileNet v1, quantised,
+	  300x300, the one detect.input_size defaults to. Installed where
+	  detect.model looks for it. Detection itself stays off until
+	  detect.enabled is true in porchlightd.json.
+
+comment "porchlight-detect needs porchlight-recorder"
+	depends on !BR2_PACKAGE_PORCHLIGHT_RECORDER

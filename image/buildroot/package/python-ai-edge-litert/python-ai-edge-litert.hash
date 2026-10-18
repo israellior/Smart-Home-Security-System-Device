@@ -1,0 +1,4 @@
+# From PyPI's JSON API for ai-edge-litert 2.3.0, and checked against the download
+sha256  899b41423b30f3cef1ce8a361443092fdeefc4d536132511634fa21548347b0a  ai_edge_litert-2.3.0-cp314-cp314-manylinux_2_27_aarch64.whl
+# Locally computed
+sha256  c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4  ai_edge_litert-2.3.0.dist-info/licenses/LICENSE
