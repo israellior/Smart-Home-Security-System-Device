@@ -200,6 +200,31 @@ void validate(const Config& cfg) {
   if (cfg.spool.path.empty()) {
     throw ConfigError("spool.path: expected a non-empty path");
   }
+
+  // Checked even when detection is off, so turning it on later cannot be the
+  // moment a bad value is discovered.
+  const DetectConfig& d = cfg.recorder.detect;
+  require_positive("detect.window_seconds", p.detect_window);
+  require_positive("detect.grace_seconds", p.detect_grace);
+  require_positive("detect.no_person_cooldown_seconds", p.no_person_cooldown);
+  require_positive("detect.fps", d.fps);
+  require_positive("detect.min_frames", d.min_frames);
+  // A window as long as the clip means the recording always ends first, and
+  // every verdict would be unknown - detection that silently does nothing.
+  if (p.detect_window >= p.clip) {
+    throw ConfigError("detect.window_seconds: expected less than timings.clip_seconds");
+  }
+  // RGB rows are padded to four bytes. At a multiple of four there is no
+  // padding, so the detector can take the frame as one block of size*size*3.
+  if (d.input_size <= 0 || d.input_size % 4 != 0) {
+    throw ConfigError("detect.input_size: expected a positive multiple of 4");
+  }
+  if (d.min_score_percent < 1 || d.min_score_percent > 100) {
+    throw ConfigError("detect.min_score_percent: expected 1 to 100");
+  }
+  if (d.min_luma < 0 || d.min_luma > 255) {
+    throw ConfigError("detect.min_luma: expected 0 to 255");
+  }
 }
 
 }  // namespace
@@ -285,6 +310,24 @@ Config load_config(const std::filesystem::path& path) {
   cfg.recorder.fps = recorder.int_or("fps", cfg.recorder.fps);
   cfg.recorder.video_bitrate_kbps =
       recorder.int_or("video_bitrate_kbps", cfg.recorder.video_bitrate_kbps);
+
+  // A section of its own rather than inside recorder: the switch decides when
+  // motion alerts, which is the core's business, and the recorder only
+  // happens to be where the frames are.
+  const Section detect = root.section("detect");
+  DetectConfig& d = cfg.recorder.detect;
+  d.enabled = detect.bool_or("enabled", d.enabled);
+  d.python = detect.string_or("python", d.python.string());
+  d.model = detect.string_or("model", d.model.string());
+  d.input_size = detect.int_or("input_size", d.input_size);
+  d.fps = detect.int_or("fps", d.fps);
+  d.min_score_percent = detect.int_or("min_score_percent", d.min_score_percent);
+  d.min_luma = detect.int_or("min_luma", d.min_luma);
+  d.min_frames = detect.int_or("min_frames", d.min_frames);
+  p.person_detection = d.enabled;
+  p.detect_window = detect.seconds_or("window_seconds", p.detect_window);
+  p.detect_grace = detect.seconds_or("grace_seconds", p.detect_grace);
+  p.no_person_cooldown = detect.seconds_or("no_person_cooldown_seconds", p.no_person_cooldown);
 
   const Section media = root.section("media");
   cfg.media.python = media.string_or("python", cfg.media.python.string());

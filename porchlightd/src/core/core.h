@@ -46,6 +46,14 @@ class Core {
     // against the requested one would only ever be a guess, since a clip
     // always comes back a little short of what was asked for.
     bool cut_short = false;
+    // A motion alert being held back until the camera says whether anybody is
+    // there. Cleared when the alert goes out or the event becomes a ring; the
+    // deadline is when the core stops waiting and sends it anyway.
+    bool awaiting_verdict = false;
+    TimePoint verdict_due{};
+    // The camera said nobody. The recording is being stopped and the clip is
+    // thrown away when it lands - unless the button is pressed first.
+    bool unwanted = false;
   };
 
   // A clip on disk with everything needed to describe it, waiting its turn.
@@ -60,12 +68,17 @@ class Core {
   void on_motion(TimePoint now, std::vector<Action>& out);
   void on_viewer(const ViewerRequested& event, std::vector<Action>& out);
   void on_call_ended(const CallEnded& event);
-  void on_recording_finished(const RecordingFinished& event, std::vector<Action>& out);
+  void on_recording_finished(const RecordingFinished& event, TimePoint now,
+                             std::vector<Action>& out);
+  void on_detection(const DetectionResult& event, TimePoint now, std::vector<Action>& out);
   void on_upload_finished(const UploadFinished& event, TimePoint now);
   void on_server_offline(const ServerOffline& event, TimePoint now);
   void on_shutdown(std::vector<Action>& out);
 
   void trigger(Kind kind, TimePoint now, bool with_clip, std::vector<Action>& out);
+  void watch_for_person(TimePoint now, std::vector<Action>& out);
+  void release_motion_alert(TimePoint now, std::vector<Action>& out);
+  void check_verdict_deadline(TimePoint now, std::vector<Action>& out);
   void start_call(const PeerId& peer, std::vector<Action>& out);
   void lapse(TimePoint now);
   void pump_alerts(TimePoint now, std::vector<Action>& out);

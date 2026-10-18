@@ -29,6 +29,14 @@ struct RecordingFinished {
   std::uintmax_t bytes = 0;
 };
 
+// The recorder's detector has looked at the frames of a motion recording. At
+// most one per recording, always before its RecordingFinished, and possibly
+// never - a recorder that dies says nothing, which the core reads as Unknown.
+struct DetectionResult {
+  EventId event_id;
+  Verdict verdict = Verdict::Unknown;
+};
+
 struct UploadFinished {
   EventId event_id;
   bool ok = false;
@@ -60,7 +68,8 @@ struct Tick {};
 struct Shutdown {};
 
 using Event = std::variant<ButtonPressed, MotionDetected, ViewerRequested, CallEnded,
-                           RecordingFinished, UploadFinished, AlertResult, ServerOnline,
+                           RecordingFinished, DetectionResult, UploadFinished, AlertResult,
+                           ServerOnline,
                            ServerOffline, Tick, Shutdown>;
 
 }  // namespace porch

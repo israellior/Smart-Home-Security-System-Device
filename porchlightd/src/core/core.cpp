@@ -31,7 +31,8 @@ std::vector<Action> Core::handle(const Event& event, TimePoint now) {
                  [&](const MotionDetected&) { on_motion(now, out); },
                  [&](const ViewerRequested& e) { on_viewer(e, out); },
                  [&](const CallEnded& e) { on_call_ended(e); },
-                 [&](const RecordingFinished& e) { on_recording_finished(e, out); },
+                 [&](const RecordingFinished& e) { on_recording_finished(e, now, out); },
+                 [&](const DetectionResult& e) { on_detection(e, now, out); },
                  [&](const UploadFinished& e) { on_upload_finished(e, now); },
                  [&](const AlertResult& e) { alerts_.on_result(e.event_id, e.kind, e.outcome, now); },
                  [&](const ServerOnline&) {
@@ -44,6 +45,7 @@ std::vector<Action> Core::handle(const Event& event, TimePoint now) {
              },
              event);
 
+  check_verdict_deadline(now, out);
   pump_alerts(now, out);
   pump_uploads(now, out);
   update_led(out);
@@ -65,6 +67,9 @@ std::optional<TimePoint> Core::next_deadline() const {
   consider(ring_led_until_);
   consider(alerts_.next_deadline());
   consider(upload_retry_after_);
+  if (recording_event_ && recording_event_->awaiting_verdict) {
+    consider(recording_event_->verdict_due);
+  }
   return earliest;
 }
 
@@ -91,6 +96,13 @@ void Core::on_motion(TimePoint now, std::vector<Action>& out) {
   if (recording_ != RecordingState::Idle) {
     return;
   }
+  // Only with nobody watching. During a call the camera belongs to the call,
+  // so there is nothing to look with, and the alert goes out unjudged as it
+  // always did.
+  if (policy_.person_detection && viewers_.empty()) {
+    watch_for_person(now, out);
+    return;
+  }
   trigger(Kind::Motion, now, viewers_.empty(), out);
 }
 
@@ -108,13 +120,21 @@ void Core::on_button(TimePoint now, std::vector<Action>& out) {
   }
   press_window_until_ = now + policy_.press_dedup_window;
 
-  if (recording_ == RecordingState::Active && recording_event_) {
+  // The camera said nobody and the recording is still flushing. That clip was
+  // about to be thrown away, and it is the one that shows who just pressed.
+  const bool rescuable = recording_event_ && recording_event_->unwanted;
+  if ((recording_ == RecordingState::Active || rescuable) && recording_event_) {
     if (recording_event_->kind == Kind::Motion) {
       // The same event becomes a ring. One id, one clip, one row on the
       // server, notified as a ring because somebody is at the door. The
       // trigger time is not raised with it: the clip still starts where the
       // motion did, which is the moment its first frame shows.
+      //
+      // A press is the proof the detector was looking for, so a motion alert
+      // still being held back is never sent at all - the ring replaces it.
       recording_event_->kind = Kind::Ring;
+      recording_event_->awaiting_verdict = false;
+      recording_event_->unwanted = false;
       alerts_.push({recording_event_->id, Kind::Ring, now});
       pump_alerts(now, out);
     }
@@ -151,7 +171,16 @@ void Core::on_call_ended(const CallEnded& event) {
   }
 }
 
-void Core::on_recording_finished(const RecordingFinished& event, std::vector<Action>& out) {
+void Core::on_recording_finished(const RecordingFinished& event, TimePoint now,
+                                 std::vector<Action>& out) {
+  // The recording ended before the camera answered - a viewer took the camera,
+  // the recorder died, the daemon is stopping. Nothing was judged, so the
+  // alert goes out as it always did. Whatever the id says: this is the only
+  // place the held alert lives, and it is about to be cleared.
+  if (recording_event_ && recording_event_->awaiting_verdict) {
+    release_motion_alert(now, out);
+  }
+
   const std::optional<ActiveEvent> described = recording_event_;
   recording_ = RecordingState::Idle;
   recording_event_.reset();
@@ -161,8 +190,9 @@ void Core::on_recording_finished(const RecordingFinished& event, std::vector<Act
   // worse than one the server never receives, so it goes rather than being sent
   // under a guessed time. It takes a RecordingFinished this core did not start.
   const bool describable = described && described->id == event.event_id;
-  const bool worth_keeping =
-      event.ok && event.bytes > 0 && event.duration >= policy_.min_clip && describable;
+  const bool worth_keeping = event.ok && event.bytes > 0 &&
+                             event.duration >= policy_.min_clip && describable &&
+                             !described->unwanted;
   if (worth_keeping) {
     uploads_.push_back({UploadClip{event.event_id, event.path, described->kind,
                                    described->triggered_at, event.duration, described->cut_short},
@@ -175,6 +205,33 @@ void Core::on_recording_finished(const RecordingFinished& event, std::vector<Act
   if (deferred_call_) {
     start_call(*deferred_call_, out);
     deferred_call_.reset();
+  }
+}
+
+void Core::on_detection(const DetectionResult& event, TimePoint now, std::vector<Action>& out) {
+  // Anything but the motion still waiting on an answer is stale: the event
+  // became a ring, the deadline already sent the alert, or it is the verdict
+  // of a recording that is not the current one.
+  if (!recording_event_ || recording_event_->id != event.event_id ||
+      !recording_event_->awaiting_verdict) {
+    return;
+  }
+  if (event.verdict != Verdict::NoPerson) {
+    release_motion_alert(now, out);
+    return;
+  }
+
+  recording_event_->awaiting_verdict = false;
+  recording_event_->unwanted = true;
+  // Short, so a person arriving after whatever woke the camera is looked for
+  // too. The full cooldown from the trigger would still have most of its time
+  // left to run.
+  motion_cooldown_until_ = now + policy_.no_person_cooldown;
+  if (recording_ == RecordingState::Active) {
+    out.push_back(StopRecording{});
+    recording_ = RecordingState::Stopping;
+    // Only matters if a press rescues the clip: it is then shorter than asked.
+    recording_event_->cut_short = true;
   }
 }
 
@@ -236,6 +293,38 @@ void Core::trigger(Kind kind, TimePoint now, bool with_clip, std::vector<Action>
   out.push_back(StartRecording{id, policy_.clip});
   recording_ = RecordingState::Active;
   recording_event_ = ActiveEvent{id, kind, now};
+}
+
+// A motion trigger with the camera as the judge. The recording starts now, as
+// it would without a detector - it is what the detector looks at - but the
+// alert is held until the camera has an answer or the core stops waiting.
+void Core::watch_for_person(TimePoint now, std::vector<Action>& out) {
+  const EventId id = ids_.next();
+  out.push_back(StartRecording{id, policy_.clip, policy_.detect_window});
+  recording_ = RecordingState::Active;
+
+  ActiveEvent active{id, Kind::Motion, now};
+  active.awaiting_verdict = true;
+  active.verdict_due = now + policy_.detect_window + policy_.detect_grace;
+  recording_event_ = active;
+}
+
+// Still stamped with the PIR's time, not the verdict's: the alert says when
+// the person was at the door, and it is the camera that was slow.
+void Core::release_motion_alert(TimePoint now, std::vector<Action>& out) {
+  recording_event_->awaiting_verdict = false;
+  alerts_.push({recording_event_->id, Kind::Motion, recording_event_->triggered_at});
+  pump_alerts(now, out);
+}
+
+// The detector is a Python thread in another process; it can hang, crash or
+// fall far behind on a hot Pi. None of that may cost an alert, so the core
+// keeps its own deadline rather than trusting an answer to arrive.
+void Core::check_verdict_deadline(TimePoint now, std::vector<Action>& out) {
+  if (recording_event_ && recording_event_->awaiting_verdict &&
+      now >= recording_event_->verdict_due) {
+    release_motion_alert(now, out);
+  }
 }
 
 void Core::start_call(const PeerId& peer, std::vector<Action>& out) {

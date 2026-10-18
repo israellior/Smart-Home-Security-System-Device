@@ -56,6 +56,20 @@
     "video_bitrate_kbps": 2000
   },
 
+  "detect": {
+    "enabled": false,
+    "python": "/opt/porchlight/venv/bin/python3",
+    "model": "/usr/local/share/porchlight/person.tflite",
+    "input_size": 300,
+    "fps": 5,
+    "min_score_percent": 50,
+    "min_luma": 40,
+    "min_frames": 8,
+    "window_seconds": 8,
+    "grace_seconds": 3,
+    "no_person_cooldown_seconds": 5
+  },
+
   "media": {
     "python": "/opt/porchlight/venv/bin/python3",
     "script": "/usr/local/lib/porchlight/webrtc-video.py",

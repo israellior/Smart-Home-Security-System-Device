@@ -200,7 +200,14 @@ sequence from the middle.
 ```
 POST /api/clips/<eventId>/upload-url
 Authorization: Bearer <device credential>
+
+{ "bytes": 3481920 }
 ```
+
+`bytes` is the clip's size, and it is required. The server signs it into the
+URL as `Content-Length`, so the bucket accepts a PUT of exactly that many bytes
+and no other — that is the only way a presigned PUT can carry a size limit.
+Missing, or over 100MB, is a 400: keep the clip.
 
 ```json
 {

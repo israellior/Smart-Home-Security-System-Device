@@ -24,6 +24,21 @@ struct Policy {
 
   std::chrono::seconds ring_led{5};
 
+  // Person detection: the PIR wakes the camera, and a motion alert waits for
+  // the camera to see a person. Off means motion alerts the moment the PIR
+  // fires, exactly as it did before there was a detector.
+  bool person_detection{false};
+  // How long the detector looks before it may say "nobody", and how much
+  // longer the core waits for any answer at all before alerting anyway. The
+  // grace covers the recorder's own start-up, which the window does not.
+  std::chrono::seconds detect_window{8};
+  std::chrono::seconds detect_grace{3};
+  // Replaces motion_cooldown once the camera has said "nobody". The full
+  // cooldown would otherwise block the PIR for the rest of it, and the person
+  // who walks up at second ten - after the cat that woke the camera - would
+  // never be looked for at all.
+  std::chrono::seconds no_person_cooldown{5};
+
   // A day, and two hundred. The server signals a transient failure by not
   // acknowledging at all and expects the device to keep trying, so these are
   // deliberately far larger than a plausible outage. Tight values here mean

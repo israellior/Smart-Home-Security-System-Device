@@ -27,6 +27,11 @@ struct SendAlert {
 struct StartRecording {
   EventId event_id;
   std::chrono::seconds seconds{0};
+  // How long the recorder's detector may look for a person before it is
+  // allowed to say there is none. Zero means do not look at all: a ring needs
+  // no proof that somebody is there, and neither does a device with detection
+  // turned off. The core waits a little longer than this for the answer.
+  std::chrono::seconds detect_for{0};
 };
 
 struct StopRecording {};

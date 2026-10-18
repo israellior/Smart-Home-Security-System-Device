@@ -149,8 +149,8 @@ without them the capture thread does the encoding and the card overruns.
 ### Upload — three steps, and only the third one counts
 
 ```
-1. POST /api/clips/<eventId>/upload-url     Bearer <device credential>
-      → { url, method: PUT, headers, expiresAt }     signed, 900 s
+1. POST /api/clips/<eventId>/upload-url     Bearer <device credential>, { bytes }
+      → { url, method: PUT, headers, expiresAt }     signed, 900 s, for exactly `bytes`
 
 2. PUT <url>                                → straight to R2; the server sees nothing
 

@@ -130,5 +130,76 @@ TEST(Pipeline, BothBranchesKeepTheirQueues) {
   EXPECT_GE(std::count(args.begin(), args.end(), std::string{"queue"}), 3);
 }
 
+// Person detection rides on the recording rather than opening the camera,
+// because only one process can hold it. These are its rules as strings.
+using namespace std::chrono_literals;
+
+TEST(Pipeline, WithoutDetectionThereIsNoTeeAndNoDetector) {
+  const auto args = build_pipeline(camera_config(), "/tmp/x.mp4");
+  EXPECT_FALSE(has(args, "tee"));
+  EXPECT_FALSE(contains(args, "appsink"));
+  EXPECT_FALSE(contains(args, "--detect"));
+}
+
+TEST(Pipeline, DetectionSplitsTheCameraIntoAnAppsink) {
+  const auto args = build_pipeline(camera_config(), "/tmp/x.mp4", 8s);
+  EXPECT_TRUE(has(args, "tee"));
+  EXPECT_TRUE(has(args, "name=t"));
+  EXPECT_TRUE(has(args, "t."));
+  EXPECT_TRUE(has(args, "appsink"));
+  // The name record-clip.py looks it up by.
+  EXPECT_TRUE(has(args, "name=detect"));
+}
+
+// The one rule the branch exists to keep: a slow detector costs judged frames,
+// never recorded ones. A queue that blocks would back up into the tee and
+// stall the encoder with it.
+TEST(Pipeline, TheDetectorBranchCanNeverStallTheClip) {
+  const auto args = build_pipeline(camera_config(), "/tmp/x.mp4", 8s);
+  EXPECT_TRUE(has(args, "leaky=downstream"));
+  EXPECT_TRUE(has(args, "drop=true"));
+  EXPECT_TRUE(has(args, "max-buffers=1"));
+  EXPECT_TRUE(has(args, "sync=false"));
+}
+
+TEST(Pipeline, TheDetectorGetsSquareRgbAtItsOwnRate) {
+  RecorderConfig config = camera_config();
+  config.detect.input_size = 320;
+  config.detect.fps = 4;
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 8s);
+  EXPECT_TRUE(has(args, "video/x-raw,format=RGB,width=320,height=320"));
+  EXPECT_TRUE(has(args, "max-rate=4"));
+}
+
+// The inference runtime is a pip package, so the venv's interpreter runs the
+// script; its switches go before the --, where parse_launchv will not see them.
+TEST(Pipeline, DetectionRunsUnderTheVenvWithItsSwitchesBeforeTheSeparator) {
+  RecorderConfig config = camera_config();
+  config.script = "/opt/x/record-clip.py";
+  config.detect.python = "/opt/venv/bin/python3";
+  config.detect.model = "/opt/x/person.tflite";
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 6s);
+
+  ASSERT_GE(args.size(), 2u);
+  EXPECT_EQ(args[0], "/opt/venv/bin/python3");
+  EXPECT_EQ(args[1], "/opt/x/record-clip.py");
+
+  const auto separator = std::find(args.begin(), args.end(), std::string{"--"});
+  ASSERT_NE(separator, args.end());
+  const auto model = std::find(args.begin(), args.end(), std::string{"--detect-model"});
+  ASSERT_LT(model, separator);
+  EXPECT_EQ(*(model + 1), "/opt/x/person.tflite");
+  const auto window = std::find(args.begin(), args.end(), std::string{"--detect-window"});
+  ASSERT_LT(window, separator);
+  // The core's window, carried on StartRecording, not a second copy in config.
+  EXPECT_EQ(*(window + 1), "6");
+}
+
+// The muxer's branches are unchanged by the tee: still a queue each side.
+TEST(Pipeline, DetectionKeepsTheRecordingsOwnQueues) {
+  const auto args = build_pipeline(camera_config(), "/tmp/x.mp4", 8s);
+  EXPECT_GE(std::count(args.begin(), args.end(), std::string{"queue"}), 4);
+}
+
 }  // namespace
 }  // namespace porch

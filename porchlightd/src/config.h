@@ -107,6 +107,33 @@ struct SpoolConfig {
   std::uintmax_t max_bytes{512ull * 1024 * 1024};
 };
 
+// The person detector, which runs inside the recorder on a second branch of
+// the same camera - only one process can hold the camera, so it cannot open
+// its own. The timings it shares with the core live in Policy.
+struct DetectConfig {
+  bool enabled{false};
+  // The inference runtime is a pip package, so the recorder runs under the
+  // venv's interpreter when it detects, and under the system one otherwise.
+  std::filesystem::path python{"/opt/porchlight/venv/bin/python3"};
+  // A TFLite SSD detector with the standard four-output post-processing -
+  // COCO SSD MobileNet, or EfficientDet-Lite - where class 0 is a person.
+  std::filesystem::path model{"/usr/local/share/porchlight/person.tflite"};
+  // The model's square input, which GStreamer scales to. A multiple of four,
+  // so an RGB row has no padding and the frame is exactly size*size*3 bytes.
+  int input_size{300};
+  // Frames handed to the detector per second. More than the Pi can infer is
+  // harmless - the branch drops what the detector is too slow to take.
+  int fps{5};
+  int min_score_percent{50};
+  // Average brightness, out of 255, below which a frame is too dark to judge.
+  // The camera has no infrared, so at night every frame is below it and every
+  // motion alerts unjudged, as it did before.
+  int min_luma{40};
+  // Bright frames that must have been looked at before "nobody" is believed.
+  // Fewer, and the answer is unknown, which alerts.
+  int min_frames{8};
+};
+
 struct RecorderConfig {
   // gst-launch-1.0 -e with the clock pinned; see pi/record-clip.py for why
   // gst-launch itself cannot record the camera and the card together.
@@ -122,6 +149,7 @@ struct RecorderConfig {
   int height{480};
   int fps{30};
   int video_bitrate_kbps{2000};
+  DetectConfig detect;
 };
 
 struct GpioConfig {

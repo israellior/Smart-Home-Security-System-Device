@@ -15,6 +15,7 @@ add_executable(core_tests
   alert_test.cpp
   button_test.cpp
   call_test.cpp
+  detection_test.cpp
   led_test.cpp
   motion_test.cpp
   recording_test.cpp
