@@ -797,9 +797,11 @@ header.
   fired only when a wire was plugged, and each change came as a storm of
   hundreds of edges that overflowed the kernel's event queue and made
   journald drop 11,000 lines, verdicts with them. Rewired, each wave was one
-  clean 2.75 s pulse. With the daemon stopped, `pir-test.py drive` (pull-up
-  vs pull-down: a connected AM312 reads 0 under both) and `pir-bursts.py` on
-  `/data` tell the two apart in seconds.
+  clean 2.75 s pulse. The test that tells them apart in seconds, with the
+  daemon stopped: request GPIO23 through Python's `gpiod` (in the image)
+  once with pull-up and once with pull-down. A connected, idle AM312 reads 0
+  under both; a line that follows the pull is floating. The scripts were
+  one-off and were not kept.
 - **LED** — one colour, GPIO25 straight into a series resistor and on to
   ground. No transistor, not addressable. Six states, no PWM, so they are told
   apart by blink rate and shape; the table is `io/led_patterns.h`.
