@@ -75,7 +75,7 @@ the viewer is the app rather than a page served from here.
 | — | The full 120° camera view | **runs on the Pi 2026-10-14** (release-9, as a bundle): a patch adds `sensor-config` to upstream `libcamerasrc`; clips and calls select 2304×1296 and the call holds 30 fps |
 | — | A smaller image | **runs on the Pi 2026-10-15** (release-10, a clean build, as a bundle): 296 → 228 MiB, bundle 120 → 89 MB. Kernel cut by `localmodconfig` to `kernel-modules.txt` (1904 modules → 72), checked at every build; `voaacenc` instead of FFmpeg, with a fallback for configs on `/data` that still say `avenc_aac`; no udev hwdb. Built-in drivers, and so the 23 MiB `Image`, not yet cut |
 | — | The Wi-Fi signal, reported to the app | **written 2026-10-15, never run on the Pi.** `server-bridge.py` reads `/proc/net/wireless` every 30 s and sends `{"type":"link","rssi":…}` on a 3 dB change; the app shows bars on the device page and "Weak Wi-Fi" over the call. Only the parser was checked, against sample files. See `docs/server-brief.md` |
-| — | Person detection gates the motion alert | **written 2026-10-03, brought onto `development` 2026-10-18; off by default, never run on the Pi, and not yet in the image** (no TFLite runtime, numpy or model there) — see "Person detection" |
+| — | Person detection gates the motion alert | **runs on the Pi 2026-10-18** (release-19, a clean build, installed by hand as a bundle): LiteRT and the model in the image, `detect.enabled` set on porch-2 only. Real visitors alert in ~1.4 s at 0.50–0.68; motion with nobody in view deletes its clip and sends nothing. Scores sit close to the 0.50 line — see "Person detection" |
 
 ### Read this first: what has run on hardware, and what has not
 
@@ -338,9 +338,10 @@ know which side of the handover the counter is on.
 
 ### Person detection
 
-**Written 2026-10-03, unit-tested in WSL, never run on a Pi.** `detect.enabled`
-is `false` in the example config, and off means motion behaves exactly as it
-did before.
+**Written 2026-10-03, run on porch-2 on 2026-10-18 (release-19).**
+`detect.enabled` is `false` in the example config, and off means motion
+behaves exactly as it did before; porch-2 has it on in its own config on
+`/data`.
 
 The PIR only wakes the camera. The recording starts at once, as before, but
 the motion alert is **held** until the camera has looked. The button is not
@@ -379,24 +380,32 @@ change to the alert protocol, so the app cannot yet tell "person" from
 `min_luma`, and every motion alerts unjudged — safe, but no filtering after
 dark.
 
-**Not known yet, and only the Pi can say:** which runtime installs on Debian
-13's Python 3.13 (`ai-edge-litert` is tried first, then `tflite_runtime`, then
-`tensorflow`), how long inference takes *while x264 is encoding*, and how hot
-the Pi gets after a run of clips (`vcgencmd measure_temp`, `get_throttled`). The
-model expected is a TFLite SSD with `TFLite_Detection_PostProcess` outputs —
-COCO SSD MobileNet v1 quantised (`detect.tflite`, 300×300, Apache 2.0) is the
-one the defaults are sized for. **Not YOLO from Ultralytics: it is AGPL**,
-which matters for a device that ships.
+**In the image** since release-19: `python-ai-edge-litert` installs the
+interpreter from Google's cp314 aarch64 wheel, only the six files
+`import ai_edge_litert.interpreter` reaches (12 MB of the wheel's 41), and
+`porchlight-detect` installs COCO SSD MobileNet v1 quantised (300×300,
+Apache 2.0) where `detect.model` looks. Bundle 92 → 100 MB. **Not YOLO from
+Ultralytics: it is AGPL**, which matters for a device that ships. Turning it
+on is one line, `"detect": {"enabled": true}`, in `porchlightd.json`.
 
-To try it on the Pi, by hand (`provision.sh` does not install any of this yet):
+**Measured on porch-2, 2026-10-18:**
 
-```bash
-sudo apt install -y python3-numpy
-sudo /opt/porchlight/venv/bin/pip install ai-edge-litert   # unverified on 3.13
-# the model: detect.tflite from coco_ssd_mobilenet_v1_1.0_quant_2018_06_29.zip
-sudo install -m 0644 detect.tflite /usr/local/share/porchlight/person.tflite
-# then "detect": { "enabled": true } in porchlightd.json and restart the unit
-```
+| | |
+|---|---|
+| runtime import / model load | 0.84 s / 92–221 ms, XNNPACK on |
+| inference, idle / while x264 encodes | 78 / 82–85 ms a frame (2 threads) |
+| frames judged in the 8 s window | 34–35 of 38 (the rest are the 0.5 s settle) |
+| CPU, detecting + recording / recording alone | ~133% / ~65% of one core |
+| ten clips back to back | 50 → 54 °C; every clip 30.0 fps, nothing lost |
+| a person in view | `person` in ~1.4 s, scores 0.50–0.68 |
+| motion, nobody in view | `no-person` at 0.27–0.49, clip deleted, no alert |
+
+**Scores sit close to the 0.50 threshold**, real people included. The likely
+reason is the input: the 16:9 frame is squashed to a 300×300 square, so a
+person reaches the model at about half their width. Fix the input (a square
+crop, or a high-resolution crop around the motion) before touching the
+threshold. And the first thing to check when it says `unknown, too dark` is
+the lens: on 2026-10-18 something covering it gave Y 16 at any exposure.
 
 A healthy run reads `rec: recording id=… looking for a person for 8s`, then
 `record-clip: detect: model loaded in … ms`, then the two-second
@@ -783,6 +792,14 @@ header.
   it. No debounce — it is a clean digital output, not a contact, and repeats
   are `motion_cooldown_seconds` to handle. (An HC-SR501 would need care here
   instead: its delay pot sets the pulse width, and it wants 5 V.)
+  **Wire it by the labels on its own board** — AM312 boards differ, and many
+  put OUT in the middle. Miswired on 2026-10-18 it held GPIO23 at a weak high,
+  fired only when a wire was plugged, and each change came as a storm of
+  hundreds of edges that overflowed the kernel's event queue and made
+  journald drop 11,000 lines, verdicts with them. Rewired, each wave was one
+  clean 2.75 s pulse. With the daemon stopped, `pir-test.py drive` (pull-up
+  vs pull-down: a connected AM312 reads 0 under both) and `pir-bursts.py` on
+  `/data` tell the two apart in seconds.
 - **LED** — one colour, GPIO25 straight into a series resistor and on to
   ground. No transistor, not addressable. Six states, no PWM, so they are told
   apart by blink rate and shape; the table is `io/led_patterns.h`.
