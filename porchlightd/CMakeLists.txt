@@ -97,6 +97,29 @@ else()
   message(STATUS "PORCHLIGHT_GPIO is off: building the tests, not the porchlightd binary")
 endif()
 
+# pi/record-clip.py and pi/upload-clip.py in C++: the same arguments, messages
+# and exit codes, so recorder.script or server.uploader_path can name either.
+# Nothing names these yet. Each is built only where its library's headers are
+# (libgstreamer1.0-dev, libcurl4-openssl-dev), so a machine without them builds
+# everything else as before.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(GSTREAMER QUIET IMPORTED_TARGET gstreamer-1.0)
+  pkg_check_modules(LIBCURL QUIET IMPORTED_TARGET libcurl)
+endif()
+if(GSTREAMER_FOUND)
+  add_executable(record-clip children/record_clip.cpp)
+  target_link_libraries(record-clip PRIVATE PkgConfig::GSTREAMER)
+else()
+  message(STATUS "gstreamer-1.0 not found: not building record-clip")
+endif()
+if(LIBCURL_FOUND)
+  add_executable(upload-clip children/upload_clip.cpp)
+  target_link_libraries(upload-clip PRIVATE PkgConfig::LIBCURL nlohmann_json::nlohmann_json)
+else()
+  message(STATUS "libcurl not found: not building upload-clip")
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
   add_subdirectory(tests)
