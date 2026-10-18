@@ -35,6 +35,10 @@ struct RecordingFinished {
 struct DetectionResult {
   EventId event_id;
   Verdict verdict = Verdict::Unknown;
+  // Who, as JSON text the recorder has already cut down to known fields: ""
+  // when faces were not looked at. The core carries it to the alert and never
+  // reads it - a name can be added to an alert, but never decide one.
+  std::string faces;
 };
 
 struct UploadFinished {

@@ -77,7 +77,8 @@ class Core {
 
   void trigger(Kind kind, TimePoint now, bool with_clip, std::vector<Action>& out);
   void watch_for_person(TimePoint now, std::vector<Action>& out);
-  void release_motion_alert(TimePoint now, std::vector<Action>& out);
+  void release_motion_alert(TimePoint now, std::vector<Action>& out,
+                            const std::string& faces = {});
   void check_verdict_deadline(TimePoint now, std::vector<Action>& out);
   void start_call(const PeerId& peer, std::vector<Action>& out);
   void lapse(TimePoint now);

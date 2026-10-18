@@ -132,6 +132,16 @@ struct DetectConfig {
   // Bright frames that must have been looked at before "nobody" is believed.
   // Fewer, and the answer is unknown, which alerts.
   int min_frames{8};
+
+  // Who, once it is a person: the face from the camera's full-resolution
+  // stream, matched against the saved faces. Needs the camera, and adds a
+  // second stream to the recording's pipeline only while it is on.
+  bool faces{false};
+  std::filesystem::path faces_store{"/data/faces/faces.json"};
+  // Percent cosine to name a saved person, and the lead over the next one.
+  // Placeholders until they are measured at the door (step 5 of the plan).
+  int face_match_percent{45};
+  int face_margin_percent{5};
 };
 
 struct RecorderConfig {

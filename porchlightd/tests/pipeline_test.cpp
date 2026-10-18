@@ -6,6 +6,7 @@
 #include "io/gst_recorder.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <string>
@@ -199,6 +200,72 @@ TEST(Pipeline, DetectionRunsUnderTheVenvWithItsSwitchesBeforeTheSeparator) {
 TEST(Pipeline, DetectionKeepsTheRecordingsOwnQueues) {
   const auto args = build_pipeline(camera_config(), "/tmp/x.mp4", 8s);
   EXPECT_GE(std::count(args.begin(), args.end(), std::string{"queue"}), 4);
+}
+
+// Faces come from the camera's second stream at full resolution, and that
+// branch must start with a queue: libcamerasrc pushes both pads from one
+// thread, and on porch-2 a branch without one held the pipeline in PAUSED
+// with no frame on either pad and no error.
+TEST(Pipeline, FacesAddTheCamerasSecondStreamBehindItsOwnQueue) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 8s);
+  const auto pad = std::find(args.begin(), args.end(), std::string{"camera.src_0"});
+  ASSERT_NE(pad, args.end());
+  ASSERT_GE(args.end() - pad, 5);
+  EXPECT_EQ(*(pad + 2), "video/x-raw,format=I420,width=2304,height=1296");
+  EXPECT_EQ(*(pad + 4), "queue");
+  EXPECT_TRUE(has(args, "name=detail"));
+}
+
+// No person, no face: without detection the second stream would cost the
+// camera's bandwidth for nothing, and the test source has no second pad.
+TEST(Pipeline, FacesNeedDetectionAndTheCamera) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4"), "camera.src_0"));
+  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4"), "--faces-store"));
+  config.video_source = "test";
+  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4", 8s), "camera.src_0"));
+  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4", 8s), "--faces-store"));
+}
+
+TEST(Pipeline, FacesSwitchesGoBeforeTheSeparator) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  config.detect.faces_store = "/data/x/faces.json";
+  config.detect.face_match_percent = 52;
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 8s);
+  const auto separator = std::find(args.begin(), args.end(), std::string{"--"});
+  const auto store = std::find(args.begin(), args.end(), std::string{"--faces-store"});
+  ASSERT_LT(store, separator);
+  EXPECT_EQ(*(store + 1), "/data/x/faces.json");
+  const auto match = std::find(args.begin(), args.end(), std::string{"--face-match"});
+  ASSERT_LT(match, separator);
+  EXPECT_EQ(*(match + 1), "52");
+}
+
+// What goes on to the server is rebuilt from known fields, never passed
+// through: the server keeps `meta` as given, and drops it whole past 2 KB or
+// on a key starting with '$'.
+TEST(Faces, OnlyPersonAndScoreReachTheAlert) {
+  const auto message = nlohmann::json::parse(R"({"verdict": "person", "faces": [
+      {"person": "p_lior", "score": 0.71, "$where": "x", "code": [1, 2, 3]},
+      {"person": 7, "score": "high"}]})");
+  EXPECT_EQ(faces_of(message),
+            R"([{"person":"p_lior","score":0.71},{"person":null,"score":0.0}])");
+}
+
+TEST(Faces, AtMostFourAndNothingWhenTheyWereNotLookedAt) {
+  nlohmann::json many = {{"faces", nlohmann::json::array()}};
+  for (int i = 0; i < 9; ++i) {
+    many["faces"].push_back({{"person", nullptr}, {"score", 0.1}});
+  }
+  EXPECT_EQ(nlohmann::json::parse(faces_of(many)).size(), 4u);
+  // Absent is "did not look"; an empty list is "looked and saw no face".
+  EXPECT_EQ(faces_of(nlohmann::json{{"verdict", "person"}}), "");
+  EXPECT_EQ(faces_of(nlohmann::json{{"faces", nlohmann::json::array()}}), "[]");
+  EXPECT_EQ(faces_of(nlohmann::json{{"faces", "p_lior"}}), "");
 }
 
 }  // namespace

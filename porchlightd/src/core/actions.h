@@ -22,6 +22,8 @@ struct SendAlert {
   // outage still reports the time of the event. Steady, so the server link
   // converts it to wall-clock as it sends.
   TimePoint triggered_at;
+  // The detector's faces, as JSON text, or "" - see DetectionResult.
+  std::string faces;
 };
 
 struct StartRecording {

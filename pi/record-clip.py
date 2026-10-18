@@ -41,6 +41,16 @@ Only a "no-person" earned by looking at enough bright frames silences an
 alert. Nothing the detector does can fail the recording: it is a thread that
 gets a copy of the frames, and any exception in it becomes "unknown".
 
+--faces-store adds who, once it is a person: the face is looked for in the
+camera's full-resolution stream - an appsink named "detail" on a second pad of
+libcamerasrc - matched against the saved faces, and the person line carries
+
+  "faces": [{"person": "<id>" | null, "score": 0.71}]
+
+null being a face that matched nobody known. No "faces" at all means it did
+not look - nobody saved, no models, no face stream - and the daemon treats
+that exactly as before faces existed.
+
 Exit codes: 0 the muxer saw EOS and the file is finished, 1 GStreamer reported
 an error, 2 the description did not parse.
 """
@@ -49,6 +59,7 @@ import argparse
 import collections
 import importlib
 import json
+import os
 import signal
 import sys
 import threading
@@ -163,6 +174,7 @@ class PersonModel:
         by_name = {d["name"]: d["index"] for d in self.interpreter.get_output_details()}
         base = "TFLite_Detection_PostProcess"
         try:
+            self.boxes = by_name[base]
             self.classes = by_name[f"{base}:1"]
             self.scores = by_name[f"{base}:2"]
             self.count = by_name[f"{base}:3"]
@@ -172,6 +184,14 @@ class PersonModel:
 
     def person_score(self, pixels):
         """The best person score in one frame, 0 to 1."""
+        return self.best_person(pixels)[0]
+
+    def best_person(self, pixels):
+        """(score, box) of the likeliest person, the box as fractions of the
+        frame - (top, left, bottom, right) - or None when there is none.
+
+        Fractions, so the box means the same thing on the full-resolution
+        stream: both streams are the same sensor area, only scaled."""
         numpy = self.numpy
         dtype = self.input["dtype"]
         if dtype == numpy.uint8:
@@ -183,14 +203,16 @@ class PersonModel:
         self.interpreter.set_tensor(self.input["index"], tensor[numpy.newaxis, ...])
         self.interpreter.invoke()
 
+        boxes = self.interpreter.get_tensor(self.boxes)[0]
         classes = self.interpreter.get_tensor(self.classes)[0]
         scores = self.interpreter.get_tensor(self.scores)[0]
         count = int(self.interpreter.get_tensor(self.count).flatten()[0])
-        best = 0.0
+        best, box = 0.0, None
         for i in range(min(count, len(scores))):
-            if int(classes[i]) == PERSON:
-                best = max(best, float(scores[i]))
-        return best
+            if int(classes[i]) == PERSON and float(scores[i]) > best:
+                best = float(scores[i])
+                box = tuple(float(v) for v in numpy.clip(boxes[i], 0.0, 1.0))
+        return best, box
 
 
 class Detector:
@@ -212,9 +234,11 @@ class Detector:
     HITS_OF = 3
     REPORT_SECONDS = 2.0
 
-    def __init__(self, options, started):
+    def __init__(self, options, started, faces=None):
         self.options = options
         self.started = started
+        self.faces = faces
+        self.person_box = None
         self.deadline = started + options.detect_window
         self.cond = threading.Condition()
         self.frame = None
@@ -249,7 +273,7 @@ class Detector:
         self.thread.join(timeout=1.0)
         self.say("unknown", why)
 
-    def say(self, verdict, why):
+    def say(self, verdict, why, faces=None):
         with self.cond:
             if self.finished:
                 return
@@ -263,7 +287,12 @@ class Detector:
             "dark": self.dark,
             "best": round(self.best, 3),
         }
-        note(f"detect: {verdict} after {line['ms']} ms - {why}")
+        # Only when the faces were looked at: absent means "did not look",
+        # which is not the same as "looked and saw nobody known".
+        if faces is not None:
+            line["faces"] = faces
+        seen = "" if faces is None else f"; faces {faces}"
+        note(f"detect: {verdict} after {line['ms']} ms - {why}{seen}")
         try:
             sys.stdout.write(json.dumps(line) + "\n")
             sys.stdout.flush()
@@ -326,13 +355,18 @@ class Detector:
                 continue
 
             began = time.monotonic()
-            score = model.person_score(pixels.reshape(size, size, 3))
+            score, box = model.best_person(pixels.reshape(size, size, 3))
             self.infer_seconds += time.monotonic() - began
             self.judged += 1
             self.best = max(self.best, score)
             hits.append(score >= threshold)
+            if score >= threshold:
+                self.person_box = box
             if sum(hits) >= self.HITS_NEEDED:
-                self.say("person", f"score {score:.2f}")
+                # Who it is, when faces are on: a person is already certain,
+                # so this can only add a name, never cost the alert.
+                faces = self.faces.look(self.person_box) if self.faces else None
+                self.say("person", f"score {score:.2f}", faces)
                 return
 
             if now - last_report >= self.REPORT_SECONDS:
@@ -357,9 +391,147 @@ class Detector:
         return int(self.infer_seconds * 1000 / self.judged) if self.judged else 0
 
 
+def i420_region(data, width, height, x0, y0, x1, y1):
+    """RGB of one rectangle of an I420 frame, without converting the rest.
+
+    The whole frame is 4.5 MB at 2304x1296 and only the head is wanted, so the
+    planes are sliced first. Rec.709, limited range: what libcamera reports."""
+    import numpy
+    x0, y0 = x0 & ~1, y0 & ~1  # chroma is shared by 2x2 blocks
+    ys = numpy.frombuffer(data, numpy.uint8, width * height).reshape(height, width)
+    cw, ch = width // 2, height // 2
+    us = numpy.frombuffer(data, numpy.uint8, cw * ch, width * height).reshape(ch, cw)
+    vs = numpy.frombuffer(data, numpy.uint8, cw * ch, width * height + cw * ch).reshape(ch, cw)
+    y = (ys[y0:y1, x0:x1].astype(numpy.float32) - 16) * 1.1644
+    h, w = y.shape
+    u = us[y0 // 2:(y0 + h + 1) // 2, x0 // 2:(x0 + w + 1) // 2].repeat(2, 0).repeat(2, 1)[:h, :w]
+    v = vs[y0 // 2:(y0 + h + 1) // 2, x0 // 2:(x0 + w + 1) // 2].repeat(2, 0).repeat(2, 1)[:h, :w]
+    u = u.astype(numpy.float32) - 128
+    v = v.astype(numpy.float32) - 128
+    rgb = numpy.stack([y + 1.7927 * v, y - 0.2132 * u - 0.5329 * v, y + 2.1124 * u], axis=-1)
+    return numpy.clip(rgb, 0, 255).astype(numpy.uint8)
+
+
+class FaceStage:
+    """Who the person is: faces in the full-resolution stream, against the
+    saved ones, after the detector has already said "person".
+
+    The models load on their own thread from the moment the recording starts,
+    so a quick verdict is not held up by forty megabytes of SFace. Only the
+    head end of the person's box is searched - the whole 2304x1296 frame costs
+    a quarter of a second in numpy, the head a few tens of milliseconds - and a
+    few frames are tried, because one with the eyes closed or the head turned
+    matches nobody. Every failure returns None, "did not look", and the alert
+    goes out exactly as it would have without faces.
+    """
+
+    TRIES = 3
+
+    def __init__(self, options, sink):
+        self.options = options
+        self.sink = sink
+        self.ready = threading.Event()
+        self.error = None
+        threading.Thread(target=self.load, name="faces-load", daemon=True).start()
+
+    def load(self):
+        try:
+            import importlib.util
+            loading = time.monotonic()
+            spec = importlib.util.spec_from_file_location("porchlight_faces", self.options.faces_module)
+            faces = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(faces)
+            self.faces = faces
+            self.store = faces.Store(self.options.faces_store)
+            if self.store.ignored:
+                raise RuntimeError(f"the saved faces were {self.store.ignored}")
+            if self.store.people:
+                self.finder, self.coder = faces.FaceFinder(), faces.FaceCoder()
+            note(f"faces: {len(self.store.people)} known, models ready in "
+                 f"{int((time.monotonic() - loading) * 1000)} ms")
+        except Exception as error:  # noqa: BLE001 - reported as "did not look"
+            self.error = f"{error!r}"
+            note(f"faces: will not look - {self.error}")
+        finally:
+            self.ready.set()
+
+    def look(self, box):
+        """[{"person": id or None, "score": s}] for the best face seen, [] when
+        no face was found, None when it could not look at all."""
+        try:
+            return self.try_look(box)
+        except Exception as error:  # noqa: BLE001
+            note(f"faces: failed - {error!r}")
+            return None
+
+    def try_look(self, box):
+        deadline = time.monotonic() + self.options.face_window
+        if not self.ready.wait(max(0.0, deadline - time.monotonic())) or self.error:
+            return None
+        if not self.store.people:
+            return None  # nobody saved: nothing a face could be matched to
+        at_least, margin = self.options.face_match / 100, self.options.face_margin / 100
+        best, sizes = None, []
+        for _ in range(self.TRIES):
+            if time.monotonic() >= deadline:
+                break
+            sample = self.sink.emit("try-pull-sample", int(0.3 * Gst.SECOND))
+            if sample is None:
+                continue
+            structure = sample.get_caps().get_structure(0)
+            width, height = structure.get_value("width"), structure.get_value("height")
+            buffer = sample.get_buffer()
+            ok, info = buffer.map(Gst.MapFlags.READ)
+            if not ok:
+                continue
+            try:
+                if len(info.data) < width * height * 3 // 2:
+                    raise ValueError(f"a {width}x{height} frame of {len(info.data)} bytes")
+                x0, y0, x1, y1 = head_area(box, width, height)
+                rgb = i420_region(info.data, width, height, x0, y0, x1, y1)
+            finally:
+                buffer.unmap(info)
+            for face in self.finder.find(rgb):
+                sizes.append(int(face["box"][2]))
+                if face["box"][2] < self.faces.MIN_FACE_PX:
+                    continue
+                code = self.coder.code(self.faces.straighten(rgb, face))
+                person, score = self.store.match(code, at_least, margin)
+                if best is None or score > best["score"]:
+                    best = {"person": person, "score": round(score, 2)}
+            if best and best["person"]:
+                break
+        note(f"faces: {len(sizes)} face(s) seen, {sizes} px wide; best {best}")
+        return [best] if best else []
+
+
+def head_area(box, width, height):
+    """Where to look for the face of a person in this box, in pixels.
+
+    The upper part of the box, as a square a little wider than a head - wide
+    enough for a head turned or leaning - or the whole frame when there is no
+    box to go by."""
+    if box is None:
+        return 0, 0, width, height
+    top, left, bottom, right = box[0] * height, box[1] * width, box[2] * height, box[3] * width
+    tall, wide = bottom - top, right - left
+    side = min(max(0.9 * wide, 0.5 * tall, 192.0), float(min(width, height)))
+    cx = (left + right) / 2
+    x0 = int(min(max(cx - side / 2, 0), width - side))
+    y0 = int(min(max(top - 0.1 * tall, 0), height - side))
+    return x0, y0, int(x0 + side), int(y0 + side)
+
+
 def attach_detector(pipeline, options, started):
     """Wires the appsink to a Detector, or says unknown at once if it cannot."""
-    detector = Detector(options, started)
+    faces = None
+    if options.faces_store:
+        detail = pipeline.get_by_name("detail")
+        if detail is None:
+            note("faces: the pipeline has no appsink named detail; faces not looked at")
+        else:
+            faces = FaceStage(options, detail)
+    detector = Detector(options, started, faces)
     sink = pipeline.get_by_name("detect")
     if sink is None:
         detector.say("unknown", "the pipeline has no appsink named detect")
@@ -450,6 +622,17 @@ def main():
                         help="bright frames judged before no-person is believed")
     detect.add_argument("--detect-bench", action="store_true",
                         help="no camera, no pipeline: load the model, time it, exit")
+    faces = parser.add_argument_group("faces, after a person (needs an appsink named detail)")
+    faces.add_argument("--faces-store", help="the saved faces; turns face matching on")
+    faces.add_argument("--faces-module",
+                       default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                            "porchlight-faces.py"))
+    faces.add_argument("--face-match", type=int, default=45,
+                       help="percent cosine a saved face must reach to be named (default 45)")
+    faces.add_argument("--face-margin", type=int, default=5,
+                       help="percent the best person must beat the next by (default 5)")
+    faces.add_argument("--face-window", type=float, default=1.5,
+                       help="seconds after the person verdict to look for a face (default 1.5)")
     parser.add_argument("pipeline", nargs=argparse.REMAINDER,
                         help="the pipeline, as gst-launch-1.0 would take it, after --")
     options = parser.parse_args()

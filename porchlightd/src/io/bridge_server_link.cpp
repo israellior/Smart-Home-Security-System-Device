@@ -154,12 +154,21 @@ void BridgeServerLink::send_alert(const SendAlert& alert) {
     return;
   }
 
-  const json frame{
+  json frame{
       {"type", "event"},
       {"eventId", alert.event_id},
       {"kind", to_string(alert.kind)},
       {"at", iso8601_of(alert.triggered_at)},
   };
+  // Who, in `meta`: the server stores it with the event as given and reads
+  // nothing else out of it, so the doorbell can say it before the server
+  // knows what to do with it. Absent when faces were not looked at.
+  if (!alert.faces.empty()) {
+    const json faces = json::parse(alert.faces, nullptr, false);
+    if (faces.is_array()) {
+      frame["meta"] = {{"faces", faces}};
+    }
+  }
   const std::string line = frame.dump() + "\n";
 
   const ssize_t written = ::write(bridge_.to_child.get(), line.data(), line.size());

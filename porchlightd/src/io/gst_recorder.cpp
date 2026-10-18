@@ -179,7 +179,8 @@ void add_detector(std::vector<std::string>& args, const DetectConfig& detect) {
   args.push_back(std::format("max-rate={}", detect.fps));
   args.push_back("!");
   // Scaled and converted here, in C, rather than in Python. Squashed rather
-  // than letterboxed: a person a metre from the door survives it.
+  // than letterboxed: on porch-2, 2026-10-18, letterboxing and two square
+  // tiles scored a person within 0.02 of it, and they cost more.
   args.push_back("videoscale");
   args.push_back("!");
   args.push_back("videoconvert");
@@ -195,12 +196,67 @@ void add_detector(std::vector<std::string>& args, const DetectConfig& detect) {
   args.push_back("sync=false");
 }
 
+// The camera's second stream, at the sensor mode's own 2304x1296, for faces:
+// a face a metre from the door is about 155 pixels wide here and about 45 in
+// the recording, which is too few to tell anyone apart. Nothing reads it
+// until the detector has found a person, so the appsink keeps one frame and
+// drops the rest, and none of them is ever mapped or copied.
+//
+// Its own queue first, and that is not tidiness: libcamerasrc pushes both
+// streams from one thread, and a branch without a queue holds the pipeline in
+// PAUSED - no frame on either pad, no error either.
+void add_details(std::vector<std::string>& args) {
+  args.push_back(std::format("{}.src_0", kCameraName));
+  args.push_back("!");
+  args.push_back("video/x-raw,format=I420,width=2304,height=1296");
+  args.push_back("!");
+  args.push_back("queue");
+  args.push_back("leaky=downstream");
+  args.push_back("max-size-buffers=1");
+  args.push_back("max-size-bytes=0");
+  args.push_back("max-size-time=0");
+  args.push_back("!");
+  args.push_back("appsink");
+  args.push_back("name=detail");
+  args.push_back("drop=true");
+  args.push_back("max-buffers=1");
+  args.push_back("sync=false");
+}
+
 }  // namespace
+
+// Rebuilt rather than passed through: the line comes from a script, and what
+// goes on to the server is only ever a few known fields. The server keeps
+// `meta` as given up to 2 KB and drops the lot beyond that, so four faces is
+// a ceiling well inside it, and a doorbell has never had five at once.
+std::string faces_of(const nlohmann::json& message) {
+  const auto it = message.find("faces");
+  if (it == message.end() || !it->is_array()) {
+    return {};
+  }
+  nlohmann::json clean = nlohmann::json::array();
+  for (const auto& face : *it) {
+    if (!face.is_object() || clean.size() >= 4) {
+      continue;
+    }
+    const auto person = face.find("person");
+    const auto score = face.find("score");
+    nlohmann::json entry = nlohmann::json::object();
+    entry["person"] = (person != face.end() && person->is_string() && person->size() <= 64)
+                          ? *person
+                          : nlohmann::json(nullptr);
+    entry["score"] = (score != face.end() && score->is_number()) ? score->get<double>() : 0.0;
+    clean.push_back(entry);
+  }
+  return clean.dump();
+}
 
 std::vector<std::string> build_pipeline(const RecorderConfig& config,
                                         const std::filesystem::path& output,
                                         std::chrono::seconds detect_for) {
   const bool detect = detect_for > std::chrono::seconds::zero();
+  // Faces need a person first, and the camera's second stream to find them in.
+  const bool faces = detect && config.detect.faces && config.video_source == "libcamera";
 
   // record-clip.py is gst-launch-1.0 -e with one addition: it turns SIGINT into
   // EOS, which flushes the muxer and leaves a file that will play, and it can
@@ -237,6 +293,14 @@ std::vector<std::string> build_pipeline(const RecorderConfig& config,
         "--detect-min-frames", std::to_string(d.min_frames),
     });
   }
+  if (faces) {
+    const DetectConfig& d = config.detect;
+    args.insert(args.end(), {
+        "--faces-store", d.faces_store.string(),
+        "--face-match", std::to_string(d.face_match_percent),
+        "--face-margin", std::to_string(d.face_margin_percent),
+    });
+  }
   args.push_back("--");
 
   args.push_back("mp4mux");
@@ -252,6 +316,9 @@ std::vector<std::string> build_pipeline(const RecorderConfig& config,
   add_audio(args, config);
   if (detect) {
     add_detector(args, config.detect);
+  }
+  if (faces) {
+    add_details(args);
   }
   return args;
 }
@@ -282,6 +349,15 @@ GstRecorder::GstRecorder(Reactor& reactor, EventSink sink, RecorderConfig config
           "detection is on but there is no interpreter at {} - motion recordings will fail "
           "to start, and alert unjudged",
           config_.detect.python.string());
+    }
+    // Also not fatal, and the ordinary state of a doorbell nobody has saved a
+    // face on: a person alerts as a person, with no name.
+    if (config_.detect.faces && !std::filesystem::exists(config_.detect.faces_store, ec)) {
+      log(Level::Info, "rec", "faces are on but none are saved yet ({})",
+          config_.detect.faces_store.string());
+    }
+    if (config_.detect.faces && config_.video_source != "libcamera") {
+      log(Level::Warn, "rec", "faces are on but the video is not the camera - not looked for");
     }
   }
 
@@ -504,9 +580,11 @@ void GstRecorder::handle_detector_line(const std::string& line) {
     return;
   }
   verdict_sent_ = true;
-  log(Level::Info, "rec", "detector: {} for {} ({})", to_string(verdict), event_id_,
-      message.value("why", std::string{"no reason given"}));
-  sink_(DetectionResult{event_id_, verdict});
+  const std::string faces = faces_of(message);
+  log(Level::Info, "rec", "detector: {} for {} ({}){}", to_string(verdict), event_id_,
+      message.value("why", std::string{"no reason given"}),
+      faces.empty() ? std::string{} : std::format("; faces {}", faces));
+  sink_(DetectionResult{event_id_, verdict, faces});
 }
 
 void GstRecorder::report(bool clean_exit) {

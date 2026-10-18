@@ -24,15 +24,23 @@ the doorbell makes every code itself - from the visitor and from the photos
 the app sends alike.
 
 Pictures are read as PPM (P6) because this image's Python has neither zlib nor
-a JPEG decoder; the recorder will hand over frames from memory instead.
+a JPEG decoder; the recorder hands over frames from memory instead.
+
+The saved faces are one JSON file: person ids and their codes, nothing else -
+no names, which the server keeps, and no pictures. Each code is tagged with
+the model that made it, and a file from another model is ignored rather than
+compared, because its codes would match nobody and look like strangers.
 
     porchlight-faces.py find IMAGE.ppm [--crops DIR]
     porchlight-faces.py compare IMAGE.ppm IMAGE.ppm ...
+    porchlight-faces.py enroll --store FILE --id ID IMAGE.ppm ...
+    porchlight-faces.py match --store FILE IMAGE.ppm ...
     porchlight-faces.py bench
 """
 
 import argparse
 import importlib
+import json
 import os
 import sys
 import time
@@ -42,6 +50,15 @@ import numpy as np
 MODEL_DIR = "/usr/local/share/porchlight"
 FIND_MODEL = os.path.join(MODEL_DIR, "face_detection_full_range.tflite")
 CODE_MODEL = os.path.join(MODEL_DIR, "face_code.tflite")
+STORE = "/data/faces/faces.json"
+# Which model made a code. Changing the model means a new name here, so every
+# saved face is made again from its photos rather than compared across models.
+CODE_MODEL_ID = "sface_2021dec_float32"
+
+# A face narrower than this, in the picture it was found in, is not coded:
+# below it SFace is guessing, and a guess that matches somebody is worse than
+# no answer.
+MIN_FACE_PX = 48
 
 # Where SFace expects the eyes, nose and mouth in its 112x112 input - the
 # template OpenCV's FaceRecognizerSF::alignCrop uses. BlazeFace gives the mouth
@@ -259,6 +276,56 @@ def cosine(a, b):
     return float(np.dot(a, b))
 
 
+class Store:
+    """The saved faces: {"model": ..., "people": [{"id": ..., "codes": [[...], ...]}]}."""
+
+    def __init__(self, path=STORE):
+        self.path = path
+        self.people = {}
+        self.ignored = None
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return
+        if data.get("model") != CODE_MODEL_ID:
+            self.ignored = f"made by {data.get('model')!r}, not {CODE_MODEL_ID!r}"
+            return
+        for person in data.get("people", []):
+            codes = np.array(person.get("codes", []), np.float64)
+            if codes.ndim == 2 and codes.shape[1] == 128 and len(codes):
+                self.people[str(person["id"])] = codes
+
+    def add(self, person_id, code):
+        old = self.people.get(person_id)
+        self.people[person_id] = code[None] if old is None else np.vstack([old, code])
+
+    def save(self):
+        data = {"model": CODE_MODEL_ID,
+                "people": [{"id": pid, "codes": [[round(float(v), 6) for v in c] for c in codes]}
+                           for pid, codes in sorted(self.people.items())]}
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, self.path)
+
+    def match(self, code, at_least, margin):
+        """(person id or None, best score). A person is named only when their
+        best code clears at_least and beats every other person by margin: two
+        people scoring alike is a guess, and a guess is reported as nobody."""
+        scores = sorted(((float(np.max(codes @ code)), pid) for pid, codes in self.people.items()),
+                        reverse=True)
+        if not scores:
+            return None, 0.0
+        best, pid = scores[0]
+        runner_up = scores[1][0] if len(scores) > 1 else -1.0
+        if best >= at_least and best - runner_up >= margin:
+            return pid, best
+        return None, best
+
+
 def faces_in(path, finder, coder):
     rgb = read_ppm(path)
     out = []
@@ -266,6 +333,10 @@ def faces_in(path, finder, coder):
         crop = straighten(rgb, face)
         out.append((face, crop, coder.code(crop)))
     return rgb, out
+
+
+def largest(found):
+    return max(found, key=lambda f: f[0]["box"][2], default=None)
 
 
 def cmd_find(options):
@@ -299,6 +370,43 @@ def cmd_compare(options):
         print(f"{label:>{width}}" + "".join(f"{cosine(a, b):7.2f}" for b in codes) + f"   {i}")
 
 
+def cmd_enroll(options):
+    """The largest face of each picture, saved under one id."""
+    finder, coder = FaceFinder(options.find_model), FaceCoder(options.code_model)
+    store = Store(options.store)
+    if store.ignored:
+        print(f"{options.store}: {store.ignored}; starting it again")
+        store.people = {}
+    added = 0
+    for path in options.images:
+        _, found = faces_in(path, finder, coder)
+        face = largest(found)
+        if face is None:
+            print(f"{path}: no face")
+        elif face[0]["box"][2] < MIN_FACE_PX:
+            print(f"{path}: face only {face[0]['box'][2]:.0f} px wide")
+        else:
+            store.add(options.id, face[2])
+            added += 1
+            print(f"{path}: added ({face[0]['box'][2]:.0f} px, score {face[0]['score']:.2f})")
+    store.save()
+    print(f"{options.id}: {len(store.people.get(options.id, []))} code(s); {added} added now")
+
+
+def cmd_match(options):
+    finder, coder = FaceFinder(options.find_model), FaceCoder(options.code_model)
+    store = Store(options.store)
+    if store.ignored:
+        print(f"{options.store}: {store.ignored}")
+    for path in options.images:
+        _, found = faces_in(path, finder, coder)
+        if not found:
+            print(f"{path}: no face")
+        for n, (face, _, code) in enumerate(found):
+            person, score = store.match(code, options.at_least, options.margin)
+            print(f"{path} face {n}: {person or 'nobody known'} (best {score:.2f})")
+
+
 def cmd_bench(options):
     finder, coder = FaceFinder(options.find_model), FaceCoder(options.code_model)
     rng = np.random.default_rng(0)
@@ -327,9 +435,19 @@ def main():
     find.add_argument("--crops", help="write each straightened face here as PPM")
     compare = sub.add_parser("compare", help="every face in these pictures against every other")
     compare.add_argument("images", nargs="+")
+    enroll = sub.add_parser("enroll", help="save the largest face of each picture under one id")
+    enroll.add_argument("--store", default=STORE)
+    enroll.add_argument("--id", required=True)
+    enroll.add_argument("images", nargs="+")
+    match = sub.add_parser("match", help="who each face is, against the saved faces")
+    match.add_argument("--store", default=STORE)
+    match.add_argument("--at-least", type=float, default=0.45)
+    match.add_argument("--margin", type=float, default=0.05)
+    match.add_argument("images", nargs="+")
     sub.add_parser("bench", help="time each step on a frame of noise")
     options = parser.parse_args()
-    {"find": cmd_find, "compare": cmd_compare, "bench": cmd_bench}[options.command](options)
+    {"find": cmd_find, "compare": cmd_compare, "enroll": cmd_enroll, "match": cmd_match,
+     "bench": cmd_bench}[options.command](options)
 
 
 if __name__ == "__main__":

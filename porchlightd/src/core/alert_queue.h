@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <deque>
 #include <optional>
+#include <string>
 
 #include "core/backoff.h"
 #include "core/clock.h"
@@ -19,6 +20,7 @@ class AlertQueue {
     EventId event_id;
     Kind kind = Kind::Motion;
     TimePoint triggered_at;
+    std::string faces;
   };
 
   explicit AlertQueue(const Policy& policy);

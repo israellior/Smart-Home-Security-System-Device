@@ -67,7 +67,11 @@
     "min_frames": 8,
     "window_seconds": 8,
     "grace_seconds": 3,
-    "no_person_cooldown_seconds": 5
+    "no_person_cooldown_seconds": 5,
+    "faces": false,
+    "faces_store": "/data/faces/faces.json",
+    "face_match_percent": 45,
+    "face_margin_percent": 5
   },
 
   "media": {

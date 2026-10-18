@@ -225,6 +225,12 @@ void validate(const Config& cfg) {
   if (d.min_luma < 0 || d.min_luma > 255) {
     throw ConfigError("detect.min_luma: expected 0 to 255");
   }
+  if (d.face_match_percent < 1 || d.face_match_percent > 100) {
+    throw ConfigError("detect.face_match_percent: expected 1 to 100");
+  }
+  if (d.face_margin_percent < 0 || d.face_margin_percent > 100) {
+    throw ConfigError("detect.face_margin_percent: expected 0 to 100");
+  }
 }
 
 }  // namespace
@@ -324,6 +330,10 @@ Config load_config(const std::filesystem::path& path) {
   d.min_score_percent = detect.int_or("min_score_percent", d.min_score_percent);
   d.min_luma = detect.int_or("min_luma", d.min_luma);
   d.min_frames = detect.int_or("min_frames", d.min_frames);
+  d.faces = detect.bool_or("faces", d.faces);
+  d.faces_store = detect.string_or("faces_store", d.faces_store.string());
+  d.face_match_percent = detect.int_or("face_match_percent", d.face_match_percent);
+  d.face_margin_percent = detect.int_or("face_margin_percent", d.face_margin_percent);
   p.person_detection = d.enabled;
   p.detect_window = detect.seconds_or("window_seconds", p.detect_window);
   p.detect_grace = detect.seconds_or("grace_seconds", p.detect_grace);

@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
 #include "config.h"
 #include "core/clock.h"
 #include "core/types.h"
@@ -16,6 +18,10 @@
 #include "unique_fd.h"
 
 namespace porch {
+
+// The detector line's "faces", cut down to what may go on to the server, as
+// JSON text: "" when it did not look, "[]" when it looked and found no face.
+std::string faces_of(const nlohmann::json& message);
 
 // Turning configuration into a command line is the one part of this that can
 // be checked without a camera or a sound card, so it is reachable on its own.

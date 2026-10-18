@@ -135,7 +135,7 @@ void Core::on_button(TimePoint now, std::vector<Action>& out) {
       recording_event_->kind = Kind::Ring;
       recording_event_->awaiting_verdict = false;
       recording_event_->unwanted = false;
-      alerts_.push({recording_event_->id, Kind::Ring, now});
+      alerts_.push({recording_event_->id, Kind::Ring, now, {}});
       pump_alerts(now, out);
     }
     return;  // one recording per event, whichever way it started
@@ -217,7 +217,7 @@ void Core::on_detection(const DetectionResult& event, TimePoint now, std::vector
     return;
   }
   if (event.verdict != Verdict::NoPerson) {
-    release_motion_alert(now, out);
+    release_motion_alert(now, out, event.faces);
     return;
   }
 
@@ -282,7 +282,7 @@ void Core::on_shutdown(std::vector<Action>& out) {
 
 void Core::trigger(Kind kind, TimePoint now, bool with_clip, std::vector<Action>& out) {
   const EventId id = ids_.next();
-  alerts_.push({id, kind, now});
+  alerts_.push({id, kind, now, {}});
   // Before the recording starts, so the server hears about the trigger even if
   // the recorder then fails outright.
   pump_alerts(now, out);
@@ -311,9 +311,10 @@ void Core::watch_for_person(TimePoint now, std::vector<Action>& out) {
 
 // Still stamped with the PIR's time, not the verdict's: the alert says when
 // the person was at the door, and it is the camera that was slow.
-void Core::release_motion_alert(TimePoint now, std::vector<Action>& out) {
+void Core::release_motion_alert(TimePoint now, std::vector<Action>& out,
+                                const std::string& faces) {
   recording_event_->awaiting_verdict = false;
-  alerts_.push({recording_event_->id, Kind::Motion, recording_event_->triggered_at});
+  alerts_.push({recording_event_->id, Kind::Motion, recording_event_->triggered_at, faces});
   pump_alerts(now, out);
 }
 
@@ -342,7 +343,7 @@ void Core::pump_alerts(TimePoint now, std::vector<Action>& out) {
     return;
   }
   alerts_.mark_sent();
-  out.push_back(SendAlert{entry->event_id, entry->kind, entry->triggered_at});
+  out.push_back(SendAlert{entry->event_id, entry->kind, entry->triggered_at, entry->faces});
 }
 
 void Core::pump_uploads(TimePoint now, std::vector<Action>& out) {

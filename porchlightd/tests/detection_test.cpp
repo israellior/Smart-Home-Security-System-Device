@@ -21,7 +21,7 @@ Policy detecting_policy() {
   return policy;
 }
 
-DetectionResult verdict(Verdict v, EventId id = "evt-1") { return DetectionResult{id, v}; }
+DetectionResult verdict(Verdict v, EventId id = "evt-1") { return DetectionResult{id, v, {}}; }
 
 TEST(Detection, MotionRecordsAndLooksButHoldsTheAlert) {
   Harness h(detecting_policy());
@@ -52,6 +52,34 @@ TEST(Detection, APersonReleasesTheAlertStampedWithThePirsTime) {
   EXPECT_EQ(alert->triggered_at, fired);
   // A person is what the clip is for: it records to its full length.
   EXPECT_EQ(count<StopRecording>(out), 0);
+}
+
+// Who it was rides on the alert untouched; the core never reads it.
+TEST(Detection, APersonsFacesTravelWithTheAlert) {
+  Harness h(detecting_policy());
+  h.go_online();
+  h.send(MotionDetected{});
+
+  const std::string faces = R"([{"person":"p_lior","score":0.71}])";
+  const auto out = h.after(2s, DetectionResult{"evt-1", Verdict::Person, faces});
+
+  const SendAlert* alert = find<SendAlert>(out);
+  ASSERT_NE(alert, nullptr);
+  EXPECT_EQ(alert->faces, faces);
+}
+
+// A name can be added to an alert but can never decide one: an alert released
+// by the deadline, or a ring, simply has none.
+TEST(Detection, AnAlertWithoutAVerdictCarriesNoFaces) {
+  Harness h(detecting_policy());
+  h.go_online();
+  h.send(MotionDetected{});
+
+  const auto out = h.after(11s);
+
+  const SendAlert* alert = find<SendAlert>(out);
+  ASSERT_NE(alert, nullptr);
+  EXPECT_EQ(alert->faces, "");
 }
 
 TEST(Detection, APersonsClipIsUploaded) {
