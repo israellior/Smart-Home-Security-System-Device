@@ -76,7 +76,7 @@ the viewer is the app rather than a page served from here.
 | — | A smaller image | **runs on the Pi 2026-10-15** (release-10, a clean build, as a bundle): 296 → 228 MiB, bundle 120 → 89 MB. Kernel cut by `localmodconfig` to `kernel-modules.txt` (1904 modules → 72), checked at every build; `voaacenc` instead of FFmpeg, with a fallback for configs on `/data` that still say `avenc_aac`; no udev hwdb. Built-in drivers, and so the 23 MiB `Image`, not yet cut |
 | — | The Wi-Fi signal, reported to the app | **written 2026-10-15, never run on the Pi.** `server-bridge.py` reads `/proc/net/wireless` every 30 s and sends `{"type":"link","rssi":…}` on a 3 dB change; the app shows bars on the device page and "Weak Wi-Fi" over the call. Only the parser was checked, against sample files. See `docs/server-brief.md` |
 | — | Person detection gates the motion alert | **runs on the Pi 2026-10-18** (release-19, a clean build, installed by hand as a bundle): LiteRT and the model in the image, `detect.enabled` set on porch-2 only. Real visitors alert in ~1.4 s at 0.50–0.68; motion with nobody in view deletes its clip and sends nothing. Scores sit close to the 0.50 line — see "Person detection" |
-| — | Face codes on the device, step 3 of the face plan | **runs on the Pi 2026-10-18, by hand** (`porchlight-faces.py`, not yet in the recorder): BlazeFace found the one face in each of six frames of porch-2's camera, ~155 px wide at ~1 m in the 2304×1296 stream (~45 px in the 640×360 recording, too small to recognise). Frames looking roughly at the camera match each other at cosine 0.59–0.77; closed eyes or a turned head fall to 0.1–0.4. Pi: find 278 ms on a full frame (the numpy shrink), straighten 15 ms, code 127 ms. Models in the image since the build after release-19 (282 MB), not yet installed. **Never tried against a second person** |
+| — | Faces recognised in the recorder, steps 3–4 of the face plan | **runs on the Pi 2026-10-19** (release-21, `detect.faces` on porch-2 only): after a person, the head end of the person's box is cut from the camera's 2304×1296 second stream, the face found (BlazeFace), coded (SFace, our TFLite conversion) and matched against `/data/faces/faces.json`. The owner, saved by hand as `p_0001` from four capture frames, was named at 0.65 with a 203 px face, person + face 1.85 s after the PIR; the alert carried `meta.faces`, which the server already stores. Release-20 had the face stream in an appsink and **every clip with faces on hung at its stop and was lost** — an appsink will not pass EOS holding an unpulled frame; release-21 uses a fakesink's `last-sample`, and clips finish `ok=true`. Bundle 100 → 137 MB (SFace float32). **Never tried against a second person**; thresholds are placeholders until step 5 |
 
 ### Read this first: what has run on hardware, and what has not
 
@@ -1050,10 +1050,12 @@ pi/record-clip.py       The recorder, as porchlightd's child: gst-launch-1.0 -e
                         --detect-model it is also the person detector: a thread
                         fed from the pipeline's appsink, one JSON verdict on
                         stdout, any failure in it reported as "unknown".
-pi/porchlight-faces.py  Faces, not yet called by anything: BlazeFace finds them,
-                        a similarity transform straightens each to 112x112,
-                        SFace turns it into a 128-number code. numpy and LiteRT
-                        only. find / compare / bench on PPM pictures by hand.
+pi/porchlight-faces.py  Faces: BlazeFace finds them, a similarity transform
+                        straightens each to 112x112, SFace turns it into a
+                        128-number code, and the store (ids and codes, no
+                        names, no pictures) says who. numpy and LiteRT only.
+                        record-clip.py loads it with --faces-store; by hand,
+                        find / compare / enroll / match / bench on PPM files.
                         Its SFace is our ONNX-to-TFLite conversion, made by
                         image/buildroot/package/porchlight-face-models/
                         convert-sface.sh and published as the GitHub release
