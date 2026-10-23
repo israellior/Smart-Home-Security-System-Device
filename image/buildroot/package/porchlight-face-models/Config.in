@@ -3,6 +3,11 @@ config BR2_PACKAGE_PORCHLIGHT_FACE_MODELS
 	# Same runtime as the person detector, and faces are only looked for
 	# once it has found a person.
 	depends on BR2_PACKAGE_PORCHLIGHT_DETECT
+	# The photos the server sends are JPEG. Pillow reads them, and with it
+	# Python gains zlib, which this image's Python lacked.
+	depends on BR2_INSTALL_LIBSTDCPP # python-pillow
+	select BR2_PACKAGE_PYTHON_PILLOW
+	select BR2_PACKAGE_JPEG
 	help
 	  The two models porchlight-faces.py runs: BlazeFace full-range
 	  (MediaPipe) to find faces and their eyes, nose and mouth, and SFace

@@ -42,6 +42,14 @@ if [ -f /data/porchlight/identity.json ]; then
 	chmod 0640 /data/wifi/setup-ssid
 fi
 
+# The people this doorbell knows: codes, no names, no pictures. The bridge's
+# helper writes them and the recorder reads them, both as porchlight, so the
+# directory is porchlight's own and nobody else's. Owned again at every boot,
+# because the first face on porch-2 was saved by hand as root.
+mkdir -p /data/faces
+chown -R porchlight:porchlight /data/faces
+chmod 0750 /data/faces
+
 # The system log, so a boot that goes wrong leaves its account behind for the
 # next one to read. journald holds early messages in RAM until
 # systemd-journal-flush moves them to /var/log/journal, and that service is

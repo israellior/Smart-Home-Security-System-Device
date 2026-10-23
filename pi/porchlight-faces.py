@@ -23,27 +23,37 @@ Codes are only comparable when the same model made them, in the same way, so
 the doorbell makes every code itself - from the visitor and from the photos
 the app sends alike.
 
-Pictures are read as PPM (P6) because this image's Python has neither zlib nor
-a JPEG decoder; the recorder hands over frames from memory instead.
+By hand, pictures are read as PPM (P6). The recorder hands over frames from
+memory, and the photos the server sends are JPEG, read with Pillow.
 
-The saved faces are one JSON file: person ids and their codes, nothing else -
-no names, which the server keeps, and no pictures. Each code is tagged with
-the model that made it, and a file from another model is ignored rather than
-compared, because its codes would match nobody and look like strangers.
+The saved faces are one JSON file: person ids, the ids of their photos and the
+codes made from each, nothing else - no names, which the server keeps, and no
+pictures. The file is tagged with the model that made its codes, and a file
+from another model is ignored rather than compared, because its codes would
+match nobody and look like strangers.
+
+`sync` is the server's list arriving, by way of server-bridge.py: the whole
+list, every time. It codes each photo it has not coded before, forgets every
+person and photo no longer listed, saves, and prints one JSON line for the
+bridge to send back - see "Faces" in docs/server-brief.md.
 
     porchlight-faces.py find IMAGE.ppm [--crops DIR]
     porchlight-faces.py compare IMAGE.ppm IMAGE.ppm ...
     porchlight-faces.py enroll --store FILE --id ID IMAGE.ppm ...
     porchlight-faces.py match --store FILE IMAGE.ppm ...
+    porchlight-faces.py sync --request FILE [--store FILE]
     porchlight-faces.py bench
 """
 
 import argparse
 import importlib
+import io
 import json
 import os
+import re
 import sys
 import time
+import urllib.request
 
 import numpy as np
 
@@ -51,9 +61,30 @@ MODEL_DIR = "/usr/local/share/porchlight"
 FIND_MODEL = os.path.join(MODEL_DIR, "face_detection_full_range.tflite")
 CODE_MODEL = os.path.join(MODEL_DIR, "face_code.tflite")
 STORE = "/data/faces/faces.json"
-# Which model made a code. Changing the model means a new name here, so every
-# saved face is made again from its photos rather than compared across models.
-CODE_MODEL_ID = "sface_2021dec_float32"
+
+
+def model_id(code_model=CODE_MODEL):
+    """Which model makes the codes, from the file installed beside it.
+
+    One place says it - the package that installs the model - so this script,
+    the bridge's hello and the image cannot disagree. Changing the model means
+    a new id there, and every saved face is made again from its photos rather
+    than compared across models."""
+    try:
+        with open(os.path.splitext(code_model)[0] + ".id") as f:
+            return f.read().strip() or "unknown"
+    except OSError:
+        return "sface_2021dec_float32"  # the only one there has been, run from a source tree
+
+
+CODE_MODEL_ID = model_id()
+
+# The server's limits, held here too: a list longer than this is cut, not
+# trusted, and anything named otherwise than an id is not one.
+MAX_PEOPLE = 10
+MAX_PHOTOS = 20
+MAX_PHOTO_BYTES = 1024 * 1024
+ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 # A face narrower than this, in the picture it was found in, is not coded:
 # below it SFace is guessing, and a guess that matches somebody is worse than
@@ -277,11 +308,23 @@ def cosine(a, b):
 
 
 class Store:
-    """The saved faces: {"model": ..., "people": [{"id": ..., "codes": [[...], ...]}]}."""
+    """The saved faces:
+
+        {"model": ..., "revision": 8 | null,
+         "people": [{"id": ..., "photos": [{"id": ..., "codes": [[...], ...]}]}]}
+
+    Codes are kept per photo so that a list arriving with one photo added codes
+    one photo, not all of them again. `revision` is the server's list last
+    applied, and what the bridge's hello reports; a file from another model
+    reads as no revision at all, so the server sends every photo again.
+
+    The first form - codes straight under the person, no photos - is still
+    read, as one photo called "local": it is what `enroll` made by hand."""
 
     def __init__(self, path=STORE):
         self.path = path
-        self.people = {}
+        self.people = {}  # person id -> {photo id -> (n, 128) array}
+        self.revision = None
         self.ignored = None
         try:
             with open(path) as f:
@@ -291,31 +334,46 @@ class Store:
         if data.get("model") != CODE_MODEL_ID:
             self.ignored = f"made by {data.get('model')!r}, not {CODE_MODEL_ID!r}"
             return
+        self.revision = data.get("revision") if isinstance(data.get("revision"), int) else None
         for person in data.get("people", []):
-            codes = np.array(person.get("codes", []), np.float64)
-            if codes.ndim == 2 and codes.shape[1] == 128 and len(codes):
-                self.people[str(person["id"])] = codes
+            photos = person.get("photos")
+            if photos is None:
+                photos = [{"id": "local", "codes": person.get("codes", [])}]
+            for photo in photos:
+                codes = np.array(photo.get("codes", []), np.float64)
+                if codes.ndim == 2 and codes.shape[1] == 128 and len(codes):
+                    self.people.setdefault(str(person["id"]), {})[str(photo["id"])] = codes
 
-    def add(self, person_id, code):
-        old = self.people.get(person_id)
-        self.people[person_id] = code[None] if old is None else np.vstack([old, code])
+    def add(self, person_id, code, photo_id="local"):
+        photos = self.people.setdefault(person_id, {})
+        old = photos.get(photo_id)
+        photos[photo_id] = code[None] if old is None else np.vstack([old, code])
+
+    def codes_of(self, person_id, photo_id):
+        return self.people.get(person_id, {}).get(photo_id)
 
     def save(self):
-        data = {"model": CODE_MODEL_ID,
-                "people": [{"id": pid, "codes": [[round(float(v), 6) for v in c] for c in codes]}
-                           for pid, codes in sorted(self.people.items())]}
+        data = {"model": CODE_MODEL_ID, "revision": self.revision,
+                "people": [{"id": pid,
+                            "photos": [{"id": phid,
+                                        "codes": [[round(float(v), 6) for v in c] for c in codes]}
+                                       for phid, codes in sorted(photos.items())]}
+                           for pid, photos in sorted(self.people.items())]}
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         tmp = self.path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(data, f)
-        os.chmod(tmp, 0o644)
+        # The recorder and the bridge run as the same user; nobody else needs
+        # to read who this doorbell knows.
+        os.chmod(tmp, 0o640)
         os.replace(tmp, self.path)
 
     def match(self, code, at_least, margin):
         """(person id or None, best score). A person is named only when their
         best code clears at_least and beats every other person by margin: two
         people scoring alike is a guess, and a guess is reported as nobody."""
-        scores = sorted(((float(np.max(codes @ code)), pid) for pid, codes in self.people.items()),
+        scores = sorted(((max(float(np.max(c @ code)) for c in photos.values()), pid)
+                         for pid, photos in self.people.items() if photos),
                         reverse=True)
         if not scores:
             return None, 0.0
@@ -390,7 +448,8 @@ def cmd_enroll(options):
             added += 1
             print(f"{path}: added ({face[0]['box'][2]:.0f} px, score {face[0]['score']:.2f})")
     store.save()
-    print(f"{options.id}: {len(store.people.get(options.id, []))} code(s); {added} added now")
+    total = sum(len(c) for c in store.people.get(options.id, {}).values())
+    print(f"{options.id}: {total} code(s); {added} added now")
 
 
 def cmd_match(options):
@@ -405,6 +464,102 @@ def cmd_match(options):
         for n, (face, _, code) in enumerate(found):
             person, score = store.match(code, options.at_least, options.margin)
             print(f"{path} face {n}: {person or 'nobody known'} (best {score:.2f})")
+
+
+def download(url):
+    """The photo's bytes, from a signed URL the server made. At most
+    MAX_PHOTO_BYTES: a photo is a cropped face, and anything bigger is not one."""
+    if not url.startswith(("https://", "http://")):
+        raise ValueError("not a web address")
+    with urllib.request.urlopen(url, timeout=30) as response:
+        data = response.read(MAX_PHOTO_BYTES + 1)
+    if len(data) > MAX_PHOTO_BYTES:
+        raise ValueError(f"more than {MAX_PHOTO_BYTES} bytes")
+    return data
+
+
+def decode(data):
+    """RGB from JPEG (or anything else Pillow reads). Imported here so that
+    every other command works on a system without Pillow."""
+    from PIL import Image
+    image = Image.open(io.BytesIO(data))
+    # Checked before decoding: the header is read, the pixels are not yet.
+    if image.width * image.height > 4096 * 4096:
+        raise ValueError(f"{image.width}x{image.height} is not a face crop")
+    return np.asarray(image.convert("RGB"))
+
+
+def code_photo(rgb, finder, coder):
+    """(code, None) or (None, the reason in the contract's words).
+
+    The app crops one face with a margin, so the face found should be the
+    only sizeable one. A second face at least half its size means the crop
+    caught two people, and which of them to save is not a guess to make."""
+    found = sorted(finder.find(rgb), key=lambda f: -f["box"][2])
+    if not found:
+        return None, "no face"
+    if found[0]["box"][2] < MIN_FACE_PX:
+        return None, "face too small"
+    if len(found) > 1 and found[1]["box"][2] >= found[0]["box"][2] / 2:
+        return None, "more than one face"
+    return coder.code(straighten(rgb, found[0])), None
+
+
+def cmd_sync(options):
+    """Apply the server's list, as server-bridge.py hands it over: code what is
+    new, forget what is gone, save, and print the answer as one JSON line.
+
+    A photo that fails is left out and said so, never fatal to the rest: one
+    blurred picture must not cost someone their other twelve. Failed photos
+    are not remembered either, so the next list tries them again."""
+    with open(options.request) as f:
+        request = json.load(f)
+    revision = request.get("revision") if isinstance(request.get("revision"), int) else None
+    store = Store(options.store)
+    finder = coder = None
+    results, kept = [], {}
+
+    for person in (request.get("people") or [])[:MAX_PEOPLE]:
+        pid = person.get("id") if isinstance(person, dict) else None
+        if not isinstance(pid, str) or not ID.match(pid):
+            continue
+        for photo in (person.get("photos") or [])[:MAX_PHOTOS]:
+            phid = photo.get("id") if isinstance(photo, dict) else None
+            if not isinstance(phid, str) or not ID.match(phid):
+                continue
+            codes = store.codes_of(pid, phid)
+            if codes is None:
+                try:
+                    data = download(str(photo.get("url", "")))
+                except Exception as error:  # noqa: BLE001 - reported per photo
+                    note(f"sync: {pid}/{phid}: could not download - {error!r}")
+                    results.append({"id": phid, "ok": False, "error": "could not download"})
+                    continue
+                try:
+                    rgb = decode(data)
+                except Exception as error:  # noqa: BLE001
+                    note(f"sync: {pid}/{phid}: not a picture - {error!r}")
+                    results.append({"id": phid, "ok": False, "error": "not a picture"})
+                    continue
+                if finder is None:  # only loaded when there is something new to code
+                    finder, coder = FaceFinder(options.find_model), FaceCoder(options.code_model)
+                code, error = code_photo(rgb, finder, coder)
+                if error:
+                    results.append({"id": phid, "ok": False, "error": error})
+                    continue
+                codes = code[None]
+            kept.setdefault(pid, {})[phid] = codes
+            results.append({"id": phid, "ok": True})
+
+    store.people, store.revision = kept, revision
+    store.save()
+    note(f"sync: revision {revision}, {len(kept)} people, "
+         f"{sum(r['ok'] for r in results)} of {len(results)} photos usable")
+    print(json.dumps({"revision": revision, "photos": results}), flush=True)
+
+
+def note(text):
+    print(f"porchlight-faces: {text}", file=sys.stderr, flush=True)
 
 
 def cmd_bench(options):
@@ -444,10 +599,13 @@ def main():
     match.add_argument("--at-least", type=float, default=0.45)
     match.add_argument("--margin", type=float, default=0.05)
     match.add_argument("images", nargs="+")
+    sync = sub.add_parser("sync", help="apply the server's list of people (see server-bridge.py)")
+    sync.add_argument("--request", required=True, help="the faces-sync frame, as JSON")
+    sync.add_argument("--store", default=STORE)
     sub.add_parser("bench", help="time each step on a frame of noise")
     options = parser.parse_args()
     {"find": cmd_find, "compare": cmd_compare, "enroll": cmd_enroll, "match": cmd_match,
-     "bench": cmd_bench}[options.command](options)
+     "sync": cmd_sync, "bench": cmd_bench}[options.command](options)
 
 
 if __name__ == "__main__":

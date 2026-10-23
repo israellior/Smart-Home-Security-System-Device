@@ -21,12 +21,16 @@ hello, and relays JSON lines both ways.
     bridge --> server   {"type":"update-status","version":...,"state":...,"progress":...}
     server --> bridge   {"type":"wifi-scan"}  {"type":"wifi-join","id":...,"ssid":...,"psk":...}
     bridge --> server   {"type":"wifi-networks",...}  {"type":"wifi-status","id":...,"state":...}
+    server --> bridge   {"type":"faces-sync","revision":8,"people":[{"id":...,"photos":[...]}]}
+    bridge --> server   {"type":"faces-status","revision":8,"photos":[{"id":...,"ok":...}]}
 
 Those are the bridge's own and never pass through the daemon. The first is the
-Wi-Fi signal and network, for the app to show (see read_rssi). The rest are
-things only root can do - install an update, change networks - so the bridge,
-which runs as `porchlight`, hands each to a root helper through a directory on
-/data and relays what it reports. See start_update and start_wifi.
+Wi-Fi signal and network, for the app to show (see read_rssi). Updates and
+networks are things only root can do, so the bridge, which runs as
+`porchlight`, hands each to a root helper through a directory on /data and
+relays what it reports. See start_update and start_wifi. The people this
+doorbell knows need no root: porchlight-faces.py runs as this same user, and
+start_faces runs it directly.
 
 There is no enrolment. The credential is written onto the SD card when the
 device is built; this only ever reads it.
@@ -50,6 +54,7 @@ diagnosed as "the daemon just sits there".
 
 import argparse
 import configparser
+import importlib.util
 import json
 import os
 import random
@@ -130,6 +135,21 @@ WIFI_JOIN_LIMIT = 8 * 60
 UPDATE_POLL = 2.0
 UPDATE_WATCH_LIMIT = 60 * 60
 
+# The people this doorbell knows - porchlight-faces.py is the other side, and
+# runs as this same user: nothing in it needs root, unlike an update or a
+# change of network. The list arrives here and goes to it as a file; its
+# answer comes back on its stdout.
+FACES_DIR = "/data/faces"
+FACES_STORE = os.path.join(FACES_DIR, "faces.json")
+FACES_REQUEST = os.path.join(FACES_DIR, "sync.json")
+FACES_HELPER = "/usr/local/lib/porchlight/porchlight-faces.py"
+FACES_MODELS = ("/usr/local/share/porchlight/face_detection_full_range.tflite",
+                "/usr/local/share/porchlight/face_code.tflite")
+FACES_MODEL_ID = "/usr/local/share/porchlight/face_code.id"
+# Downloading and coding up to 200 photos at a few hundred milliseconds each,
+# on a doorbell that may be recording at the same time.
+FACES_LIMIT = 15 * 60
+
 
 def booted_slot():
     """A or B, from the kernel command line U-Boot wrote, or None off our image."""
@@ -199,13 +219,42 @@ def current_ssid():
     return None
 
 
+def faces_hello():
+    """{"model", "revision"} when this doorbell can recognise faces, else None.
+
+    Can means: the helper and both models installed, Pillow to read the
+    photos, and the store's directory ours to write. A doorbell missing any of
+    them says nothing, and is never sent the list it could not use.
+
+    `revision` is the list last applied - but only if the store was made by
+    the model installed now. After an update that changed the model its codes
+    compare with nothing, so it reports None and is sent every photo again."""
+    try:
+        with open(FACES_MODEL_ID) as handle:
+            model = handle.read().strip()
+    except OSError:
+        return None
+    if not (model and os.path.exists(FACES_HELPER) and all(map(os.path.exists, FACES_MODELS))
+            and importlib.util.find_spec("PIL") is not None and os.access(FACES_DIR, os.W_OK)):
+        return None
+    revision = None
+    try:
+        with open(FACES_STORE) as handle:
+            store = json.load(handle)
+        if store.get("model") == model and isinstance(store.get("revision"), int):
+            revision = store["revision"]
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {"model": model, "revision": revision}
+
+
 def hello_frame(device_id, credential):
     """Said first on every connection, by the bridge and by --probe alike.
 
     It carries what this device is running, so the server learns how an
     update went from the hello after the restart - including a rollback,
     which nothing on the device ever reports in so many words."""
-    return {
+    frame = {
         "type": "hello",
         "role": HELLO_ROLE,
         "deviceId": device_id,
@@ -215,6 +264,10 @@ def hello_frame(device_id, credential):
         "wifi": can_change_wifi(),
         "setupSsid": setup_ssid(),
     }
+    faces = faces_hello()
+    if faces is not None:
+        frame["faces"] = faces
+    return frame
 
 
 def close_meaning(code):
@@ -423,6 +476,16 @@ class Bridge:
         # offers a second while one is in flight, and this holds to it too.
         self.update_watch = None
         self.wifi_watch = None
+        # The people this doorbell knows. One sync at a time, on its own
+        # thread; a list that arrives while one runs waits here, and only the
+        # newest waits - it is the whole list, so an older one is out of date.
+        self.faces_lock = threading.Lock()
+        self.faces_running = False
+        self.faces_waiting = None
+        # The answer to the last sync, until it has reached the server: the
+        # socket may well be down when a long sync ends, and the hello after
+        # it reports the new revision, so nothing would make it be asked again.
+        self.faces_unsent = None
 
     def run(self):
         threading.Thread(target=self.read_stdin, daemon=True).start()
@@ -492,6 +555,7 @@ class Bridge:
             # The server forgets the signal with the connection.
             self.link_sent = _UNSENT
             self.link_wake.set()
+            self.send_faces_status()
         elif kind == "hello-error":
             # The server should close after this, and this one does. Closing it
             # ourselves covers the server that does not: a socket left open
@@ -509,6 +573,8 @@ class Bridge:
         elif kind == "wifi-join":
             self.start_wifi({"action": "join", "id": message.get("id"),
                              "ssid": message.get("ssid"), "psk": message.get("psk")})
+        elif kind == "faces-sync":
+            self.start_faces(message)
         elif kind == "ping":
             self.send({"type": "pong"})
         elif kind == "replaced":
@@ -710,6 +776,73 @@ class Bridge:
                 last = state
             if state in ("connected", "failed") and last == state:
                 return
+
+    def start_faces(self, message):
+        """Hands the server's list of people to porchlight-faces.py.
+
+        Not done here: coding a photo needs numpy and two models, and this
+        process's main thread answers the server's pings and must never wait
+        on anything. The helper runs as this same user, on its own thread,
+        and the list reaches it as a file - it can carry a few hundred signed
+        URLs, which is more than belongs on a command line."""
+        if not isinstance(message.get("people"), list) or faces_hello() is None:
+            note("faces-sync ignored: not a list, or this doorbell cannot recognise faces")
+            return
+        with self.faces_lock:
+            if self.faces_running:
+                self.faces_waiting = message
+                note(f"faces-sync {message.get('revision')} waiting for the one running")
+                return
+            self.faces_running = True
+        threading.Thread(target=self.run_faces, args=(message,), daemon=True).start()
+
+    def run_faces(self, message):
+        while message is not None and not self.stop:
+            self.faces_once(message)
+            with self.faces_lock:
+                message, self.faces_waiting = self.faces_waiting, None
+                if message is None:
+                    self.faces_running = False
+
+    def faces_once(self, message):
+        revision = message.get("revision")
+        tmp = FACES_REQUEST + ".tmp"
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(message, handle)
+            os.replace(tmp, FACES_REQUEST)
+        except OSError as error:
+            note(f"faces-sync {revision}: could not hand it over: {error}")
+            return
+        began = time.monotonic()
+        try:
+            done = subprocess.run(
+                [sys.executable, FACES_HELPER, "sync", "--request", FACES_REQUEST,
+                 "--store", FACES_STORE],
+                stdout=subprocess.PIPE, text=True, timeout=FACES_LIMIT)
+            answer = json.loads(done.stdout.strip().splitlines()[-1])
+        except (OSError, subprocess.TimeoutExpired, ValueError, IndexError) as error:
+            # Nothing is sent: the store is as it was, the next hello reports
+            # its old revision, and the server sends the list again.
+            note(f"faces-sync {revision} failed: {error!r}")
+            return
+        finally:
+            try:
+                os.unlink(FACES_REQUEST)  # signed URLs, no use to anyone afterwards
+            except OSError:
+                pass
+        ok = sum(1 for p in answer.get("photos", []) if p.get("ok"))
+        note(f"faces-sync {revision}: {ok} of {len(answer.get('photos', []))} photos usable, "
+             f"{time.monotonic() - began:.0f}s")
+        self.faces_unsent = {"type": "faces-status", "revision": answer.get("revision"),
+                             "photos": answer.get("photos", [])}
+        self.send_faces_status()
+
+    def send_faces_status(self):
+        frame = self.faces_unsent
+        if frame is not None and self.send(frame):
+            self.faces_unsent = None
 
     def read_stdin(self):
         """Lines from the daemon. EOF means the daemon is gone; so are we."""

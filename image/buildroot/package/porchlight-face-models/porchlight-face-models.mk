@@ -26,12 +26,19 @@ define PORCHLIGHT_FACE_MODELS_EXTRACT_CMDS
 		$(PORCHLIGHT_FACE_MODELS_DL_DIR)/$(PORCHLIGHT_FACE_MODELS_SFACE) $(@D)/
 endef
 
+# Which model makes the codes, said once, here: porchlight-faces.py tags the
+# saved faces with it and the bridge reports it in its hello. A new model must
+# get a new id, or codes from the old one would be compared with the new.
+PORCHLIGHT_FACE_MODELS_CODE_ID = sface_2021dec_float32
+
 # The names porchlight-faces.py looks for by default.
 define PORCHLIGHT_FACE_MODELS_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0644 $(@D)/$(PORCHLIGHT_FACE_MODELS_SOURCE) \
 		$(TARGET_DIR)/usr/local/share/porchlight/face_detection_full_range.tflite
 	$(INSTALL) -D -m 0644 $(@D)/$(PORCHLIGHT_FACE_MODELS_SFACE) \
 		$(TARGET_DIR)/usr/local/share/porchlight/face_code.tflite
+	echo $(PORCHLIGHT_FACE_MODELS_CODE_ID) > $(TARGET_DIR)/usr/local/share/porchlight/face_code.id
+	chmod 0644 $(TARGET_DIR)/usr/local/share/porchlight/face_code.id
 endef
 
 $(eval $(generic-package))
