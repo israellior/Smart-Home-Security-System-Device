@@ -76,7 +76,7 @@ void Daemon::execute(const Action& action) {
                  [&](const PlayChime&) { hardware_.chime->play(); },
                  [&](const SendAlert& a) { hardware_.server->send_alert(a); },
                  [&](const StartRecording& a) {
-                   hardware_.recorder->start(a.event_id, a.seconds, a.detect_for);
+                   hardware_.recorder->start(a.event_id, a.seconds, a.detect_for, a.ring_faces);
                  },
                  [&](const StopRecording&) { hardware_.recorder->stop(); },
                  [&](const UploadClip& a) { hardware_.uploader->upload(a); },

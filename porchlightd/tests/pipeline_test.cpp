@@ -262,6 +262,53 @@ TEST(Pipeline, FacesSwitchesGoBeforeTheSeparator) {
   EXPECT_EQ(*(match + 1), "52");
 }
 
+TEST(Pipeline, TheFaceSearchLengthIsPassedOn) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  config.detect.face_search = 7s;
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 8s);
+  const auto window = std::find(args.begin(), args.end(), std::string{"--face-window"});
+  ASSERT_NE(window, args.end());
+  EXPECT_EQ(*(window + 1), "7");
+}
+
+// A ring is never judged, only named: the person model still runs, for where
+// the head is, and the window is how long the alert is held for a name.
+TEST(Pipeline, ARingLooksOnlyForWho) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 0s, 3s);
+  const auto separator = std::find(args.begin(), args.end(), std::string{"--"});
+  const auto ring = std::find(args.begin(), args.end(), std::string{"--ring"});
+  ASSERT_LT(ring, separator);
+  const auto window = std::find(args.begin(), args.end(), std::string{"--detect-window"});
+  ASSERT_LT(window, separator);
+  EXPECT_EQ(*(window + 1), "3");
+  EXPECT_TRUE(has(args, "--faces-store"));
+  EXPECT_TRUE(has(args, "name=detect"));
+  EXPECT_TRUE(has(args, "camera.src_0"));
+}
+
+// With no face to be found there is nothing for a ring to wait on: it
+// records exactly as it always did.
+TEST(Pipeline, ARingWithoutFacesIsAPlainRecording) {
+  RecorderConfig config = camera_config();
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 0s, 3s);
+  EXPECT_FALSE(has(args, "--ring"));
+  EXPECT_FALSE(contains(args, "--detect"));
+  EXPECT_FALSE(has(args, "camera.src_0"));
+  config.detect.faces = true;
+  config.video_source = "test";
+  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4", 0s, 3s), "--ring"));
+}
+
+// A motion recording is judged, never a ring's.
+TEST(Pipeline, AMotionRecordingIsNeverARing) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4", 8s), "--ring"));
+}
+
 // What goes on to the server is rebuilt from known fields, never passed
 // through: the server keeps `meta` as given, and drops it whole past 2 KB or
 // on a key starting with '$'.

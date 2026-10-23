@@ -25,10 +25,12 @@ std::string faces_of(const nlohmann::json& message);
 
 // Turning configuration into a command line is the one part of this that can
 // be checked without a camera or a sound card, so it is reachable on its own.
-// detect_for above zero adds the detector's branch and its switches.
+// detect_for above zero adds the detector's branch and its switches;
+// ring_faces above zero, with faces on, looks only for the face of whoever rang.
 std::vector<std::string> build_pipeline(const RecorderConfig& config,
                                         const std::filesystem::path& output,
-                                        std::chrono::seconds detect_for = std::chrono::seconds{0});
+                                        std::chrono::seconds detect_for = std::chrono::seconds{0},
+                                        std::chrono::seconds ring_faces = std::chrono::seconds{0});
 
 // pi/record-clip.py - gst-launch-1.0 -e with the clock pinned - as a child
 // process, watched through a pidfd.
@@ -49,10 +51,11 @@ class GstRecorder {
   ~GstRecorder();
 
   // detect_for above zero also runs the person detector on the same frames,
-  // which answers with at most one DetectionResult, always before the
-  // RecordingFinished. Zero means no detector and no DetectionResult.
+  // and ring_faces above zero looks for who rang; either answers with at most
+  // one DetectionResult, always before the RecordingFinished. Both zero means
+  // no detector and no DetectionResult.
   void start(const EventId& event_id, std::chrono::seconds seconds,
-             std::chrono::seconds detect_for);
+             std::chrono::seconds detect_for, std::chrono::seconds ring_faces);
   void stop();
 
   // Shutdown waits on this, so the clip is not left unplayable.

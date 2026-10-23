@@ -257,10 +257,16 @@ std::string faces_of(const nlohmann::json& message) {
 
 std::vector<std::string> build_pipeline(const RecorderConfig& config,
                                         const std::filesystem::path& output,
-                                        std::chrono::seconds detect_for) {
-  const bool detect = detect_for > std::chrono::seconds::zero();
+                                        std::chrono::seconds detect_for,
+                                        std::chrono::seconds ring_faces) {
+  const bool can_see_faces = config.detect.faces && config.video_source == "libcamera";
+  // A ring looks for who and never for whether, so it is only worth the
+  // camera's second stream when there is a face to be found in it.
+  const bool ring = ring_faces > std::chrono::seconds::zero() && can_see_faces;
+  // The person model runs for a ring too: its box says where the head is.
+  const bool detect = detect_for > std::chrono::seconds::zero() || ring;
   // Faces need a person first, and the camera's second stream to find them in.
-  const bool faces = detect && config.detect.faces && config.video_source == "libcamera";
+  const bool faces = detect && can_see_faces;
 
   // record-clip.py is gst-launch-1.0 -e with one addition: it turns SIGINT into
   // EOS, which flushes the muxer and leaves a file that will play, and it can
@@ -291,11 +297,14 @@ std::vector<std::string> build_pipeline(const RecorderConfig& config,
     args.insert(args.end(), {
         "--detect-model", d.model.string(),
         "--detect-size", std::to_string(d.input_size),
-        "--detect-window", std::to_string(detect_for.count()),
+        "--detect-window", std::to_string((ring ? ring_faces : detect_for).count()),
         "--detect-min-score", std::to_string(d.min_score_percent),
         "--detect-min-luma", std::to_string(d.min_luma),
         "--detect-min-frames", std::to_string(d.min_frames),
     });
+    if (ring) {
+      args.push_back("--ring");
+    }
   }
   if (faces) {
     const DetectConfig& d = config.detect;
@@ -303,6 +312,7 @@ std::vector<std::string> build_pipeline(const RecorderConfig& config,
         "--faces-store", d.faces_store.string(),
         "--face-match", std::to_string(d.face_match_percent),
         "--face-margin", std::to_string(d.face_margin_percent),
+        "--face-window", std::to_string(d.face_search.count()),
     });
   }
   args.push_back("--");
@@ -395,7 +405,7 @@ GstRecorder::~GstRecorder() {
 }
 
 void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds,
-                        std::chrono::seconds detect_for) {
+                        std::chrono::seconds detect_for, std::chrono::seconds ring_faces) {
   if (phase_ != Phase::Idle) {
     // The core never does this. If it ever did, the answer must still be
     // exactly one RecordingFinished per start, or it would wait forever.
@@ -419,9 +429,14 @@ void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds,
   verdict_sent_ = false;
   detector_input_.clear();
 
-  const std::vector<std::string> args = build_pipeline(config_, output_, detect_for);
+  const std::vector<std::string> args = build_pipeline(config_, output_, detect_for, ring_faces);
+  // Piped whenever the core is holding an alert for the answer. A ring that
+  // build_pipeline decided not to look for simply never answers, and the
+  // core's own deadline sends it.
+  const bool answers = detect_for > std::chrono::seconds::zero() ||
+                       ring_faces > std::chrono::seconds::zero();
   pid_t pid = -1;
-  if (detect_for > std::chrono::seconds::zero()) {
+  if (answers) {
     PipedChild child = spawn_child_with_pipes(args);
     pid = child.pid;
     if (pid >= 0) {
@@ -462,6 +477,9 @@ void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds,
   if (detect_for > std::chrono::seconds::zero()) {
     log(Level::Info, "rec", "recording id={} for {}s to {}, looking for a person for {}s",
         event_id, seconds.count(), output_.string(), detect_for.count());
+  } else if (ring_faces > std::chrono::seconds::zero()) {
+    log(Level::Info, "rec", "recording id={} for {}s to {}, a ring: looking for who for {}s",
+        event_id, seconds.count(), output_.string(), ring_faces.count());
   } else {
     log(Level::Info, "rec", "recording id={} for {}s to {}", event_id, seconds.count(),
         output_.string());

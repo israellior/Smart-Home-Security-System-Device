@@ -231,6 +231,16 @@ void validate(const Config& cfg) {
   if (d.face_margin_percent < 0 || d.face_margin_percent > 100) {
     throw ConfigError("detect.face_margin_percent: expected 0 to 100");
   }
+  require_positive("detect.face_seconds", d.face_search);
+  // The search runs inside the recording: one that outlasts it is cut off,
+  // and the alert goes out with no name.
+  if (d.faces && p.detect_window + d.face_search >= p.clip) {
+    throw ConfigError(
+        "detect.window_seconds + detect.face_seconds: expected less than timings.clip_seconds");
+  }
+  if (d.ring_wait >= p.clip) {
+    throw ConfigError("detect.ring_wait_seconds: expected less than timings.clip_seconds");
+  }
 }
 
 }  // namespace
@@ -334,10 +344,17 @@ Config load_config(const std::filesystem::path& path) {
   d.faces_store = detect.string_or("faces_store", d.faces_store.string());
   d.face_match_percent = detect.int_or("face_match_percent", d.face_match_percent);
   d.face_margin_percent = detect.int_or("face_margin_percent", d.face_margin_percent);
+  d.face_search = detect.seconds_or("face_seconds", d.face_search);
+  d.ring_wait = detect.seconds_or("ring_wait_seconds", d.ring_wait);
   p.person_detection = d.enabled;
   p.detect_window = detect.seconds_or("window_seconds", p.detect_window);
   p.detect_grace = detect.seconds_or("grace_seconds", p.detect_grace);
   p.no_person_cooldown = detect.seconds_or("no_person_cooldown_seconds", p.no_person_cooldown);
+  // Only where a face can actually be found. A ring that waited for a name
+  // nobody could look for would just be a late ring.
+  const bool faces_on = d.enabled && d.faces && cfg.recorder.video_source == "libcamera";
+  p.face_search = faces_on ? d.face_search : std::chrono::seconds::zero();
+  p.ring_face_wait = faces_on ? d.ring_wait : std::chrono::seconds::zero();
 
   const Section media = root.section("media");
   cfg.media.python = media.string_or("python", cfg.media.python.string());

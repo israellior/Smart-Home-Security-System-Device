@@ -50,7 +50,15 @@ on a second pad of libcamerasrc, never an appsink, which would hold up the stop
 
 null being a face that matched nobody known. No "faces" at all means it did
 not look - nobody saved, no models, no face stream - and the daemon treats
-that exactly as before faces existed.
+that exactly as before faces existed. The search goes on for --face-window
+seconds after the person, because whoever walks up is side-on or moving when
+the person is first seen; it stops at the first name, or once enough clear
+faces have matched nobody.
+
+--ring is a ring's recording: the line is still "person", because a ring
+never needs proof, and the only question is who. It looks from the first
+frame, and stops --detect-window seconds after this process began, which is
+how long the daemon holds the ring's alert for a name.
 
 Exit codes: 0 the muxer saw EOS and the file is finished, 1 GStreamer reported
 an error, 2 the description did not parse.
@@ -66,7 +74,11 @@ import sys
 import threading
 import time
 
-import gi
+# Before GStreamer's import, which takes a good part of a second on a Pi: a
+# ring's search for a name has to end within a few seconds of the press.
+PROCESS_STARTED = time.monotonic()
+
+import gi  # noqa: E402
 
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst  # noqa: E402
@@ -234,11 +246,15 @@ class Detector:
     HITS_NEEDED = 2
     HITS_OF = 3
     REPORT_SECONDS = 2.0
+    # A ring's answer has to reach the daemon before it stops holding the
+    # alert, and this process began a little after the press it is timed from.
+    RING_MARGIN = 0.3
 
     def __init__(self, options, started, faces=None):
         self.options = options
         self.started = started
         self.faces = faces
+        self.model = None
         self.person_box = None
         self.deadline = started + options.detect_window
         self.cond = threading.Condition()
@@ -306,11 +322,35 @@ class Detector:
         except Exception as error:  # noqa: BLE001 - every failure means "could not judge"
             self.say("unknown", f"the detector failed: {error!r}")
 
+    def fresh_box(self):
+        """Where the person is in the newest frame, or None when there is no
+        new frame or no person in it. For the face stage between its tries:
+        whoever walks up moves, and the box from the verdict's frame - often
+        the whole picture, as they step in close - soon points at nobody. It
+        runs on this thread, which the face stage is borrowing, so the model
+        is free."""
+        with self.cond:
+            frame, self.frame = self.frame, None
+        if frame is None or self.model is None:
+            return None
+        import numpy
+        size = self.options.detect_size
+        pixels = numpy.frombuffer(frame, dtype=numpy.uint8)
+        if pixels.size != size * size * 3:
+            return None
+        score, box = self.model.best_person(pixels.reshape(size, size, 3))
+        return box if score >= self.options.detect_min_score / 100.0 else None
+
     def detect(self):
         import numpy  # here, so a recording without detection never pays for it
 
+        if self.options.ring and not (self.faces and self.faces.anyone_saved(self.deadline)):
+            self.say("person", "a ring, with no saved face to name")
+            return
+
         loading = time.monotonic()
         model = PersonModel(self.options.detect_model, self.options.detect_size, numpy)
+        self.model = model
         note(f"detect: model loaded with {model.runtime} in "
              f"{int((time.monotonic() - loading) * 1000)} ms")
 
@@ -335,10 +375,25 @@ class Detector:
                 self.say("unknown", "the recording ended before a verdict")
                 return
             if now >= self.deadline:
-                self.conclude()
+                if self.options.ring:
+                    self.say("unknown", "a ring: no frame came in time to look for who")
+                else:
+                    self.conclude()
                 return
             if frame is None:
                 continue
+
+            if self.options.ring:
+                # No settling and no brightness test: there is no verdict to
+                # protect, only a face to find, and the face stage tries frame
+                # after frame until the ring's time is up.
+                pixels = numpy.frombuffer(frame, dtype=numpy.uint8).reshape(size, size, 3)
+                score, box = model.best_person(pixels)
+                box = box if score >= threshold else None
+                until = self.deadline - self.RING_MARGIN
+                faces = self.faces.look(box, self.fresh_box, until=until) if self.faces else None
+                self.say("person", "a ring: looked only for who", faces)
+                return
 
             if first_frame_at is None:
                 first_frame_at = now
@@ -366,7 +421,7 @@ class Detector:
             if sum(hits) >= self.HITS_NEEDED:
                 # Who it is, when faces are on: a person is already certain,
                 # so this can only add a name, never cost the alert.
-                faces = self.faces.look(self.person_box) if self.faces else None
+                faces = self.faces.look(self.person_box, self.fresh_box) if self.faces else None
                 self.say("person", f"score {score:.2f}", faces)
                 return
 
@@ -420,13 +475,18 @@ class FaceStage:
     The models load on their own thread from the moment the recording starts,
     so a quick verdict is not held up by forty megabytes of SFace. Only the
     head end of the person's box is searched - the whole 2304x1296 frame costs
-    a quarter of a second in numpy, the head a few tens of milliseconds - and a
-    few frames are tried, because one with the eyes closed or the head turned
-    matches nobody. Every failure returns None, "did not look", and the alert
-    goes out exactly as it would have without faces.
+    a quarter of a second in numpy, the head a few tens of milliseconds - and
+    the box is found again before every frame, because whoever it is keeps
+    moving. Frame after frame is tried, because the first ones are of somebody
+    still walking in, side-on: on porch-2 three frames in 1.5 s missed every
+    visitor, and a face held to the camera was named in 91 frames of 93. Every
+    failure returns None, "did not look", and the alert goes out exactly as it
+    would have without faces.
     """
 
-    TRIES = 3
+    # Clear faces that matched nobody before it stops looking: a stranger
+    # facing the camera should not hold the alert for the whole search.
+    STRANGER_FACES = 4
 
     def __init__(self, options, sink):
         self.options = options
@@ -456,24 +516,37 @@ class FaceStage:
         finally:
             self.ready.set()
 
-    def look(self, box):
+    def anyone_saved(self, until):
+        """Whether a face could be named as anybody at all. A ring's alert is
+        held for the answer, so it must not be held for a search that cannot
+        name anyone - the ordinary state of a doorbell nobody has saved a face
+        on."""
+        self.ready.wait(max(0.0, until - time.monotonic()))
+        return self.ready.is_set() and not self.error and bool(self.store.people)
+
+    def look(self, box, refresh=None, until=None):
         """[{"person": id or None, "score": s}] for the best face seen, [] when
-        no face was found, None when it could not look at all."""
+        no face was found, None when it could not look at all.
+
+        box is where the person was at the verdict; refresh, if given, says
+        where they are now, before every frame after the first. The search
+        ends at until, or --face-window seconds from now."""
         try:
-            return self.try_look(box)
+            return self.try_look(box, refresh, until)
         except Exception as error:  # noqa: BLE001
             note(f"faces: failed - {error!r}")
             return None
 
-    def try_look(self, box):
-        deadline = time.monotonic() + self.options.face_window
+    def try_look(self, box, refresh, until):
+        began = time.monotonic()
+        deadline = until if until is not None else began + self.options.face_window
         if not self.ready.wait(max(0.0, deadline - time.monotonic())) or self.error:
             return None
         if not self.store.people:
             return None  # nobody saved: nothing a face could be matched to
         at_least, margin = self.options.face_match / 100, self.options.face_margin / 100
-        best, sizes, looked = None, [], set()
-        while len(looked) < self.TRIES and time.monotonic() < deadline:
+        best, sizes, looked, strangers = None, [], set(), 0
+        while time.monotonic() < deadline:
             # The fakesink's newest frame. The same one twice says nothing
             # new, so wait for the next rather than code it again.
             sample = self.sink.get_property("last-sample")
@@ -481,6 +554,8 @@ class FaceStage:
             if sample is None or stamp in looked:
                 time.sleep(0.05)
                 continue
+            if looked and refresh is not None:
+                box = refresh() or box
             looked.add(stamp)
             structure = sample.get_caps().get_structure(0)
             width, height = structure.get_value("width"), structure.get_value("height")
@@ -491,22 +566,41 @@ class FaceStage:
             try:
                 if len(info.data) < width * height * 3 // 2:
                     raise ValueError(f"a {width}x{height} frame of {len(info.data)} bytes")
-                x0, y0, x1, y1 = head_area(box, width, height)
-                rgb = i420_region(info.data, width, height, x0, y0, x1, y1)
+                crops = [i420_region(info.data, width, height, *area)
+                         for area in search_areas(box, width, height)]
             finally:
                 buffer.unmap(info)
-            for face in self.finder.find(rgb):
-                sizes.append(int(face["box"][2]))
-                if face["box"][2] < self.faces.MIN_FACE_PX:
-                    continue
-                code = self.coder.code(self.faces.straighten(rgb, face))
-                person, score = self.store.match(code, at_least, margin)
-                if best is None or score > best["score"]:
-                    best = {"person": person, "score": round(score, 2)}
+            for rgb in crops:
+                for face in self.finder.find(rgb):
+                    sizes.append(int(face["box"][2]))
+                    if face["box"][2] < self.faces.MIN_FACE_PX:
+                        continue
+                    code = self.coder.code(self.faces.straighten(rgb, face))
+                    person, score = self.store.match(code, at_least, margin)
+                    strangers += person is None
+                    if best is None or score > best["score"]:
+                        best = {"person": person, "score": round(score, 2)}
             if best and best["person"]:
                 break
-        note(f"faces: {len(sizes)} face(s) seen, {sizes} px wide; best {best}")
+            if strangers >= self.STRANGER_FACES:
+                break
+        spent = int((time.monotonic() - began) * 1000)
+        note(f"faces: {len(sizes)} face(s) in {len(looked)} frames over {spent} ms, "
+             f"{sizes[:8]} px wide; best {best}")
         return [best] if best else []
+
+
+def search_areas(box, width, height):
+    """The squares of one frame to look for a face in: the head end of the
+    person's box, or, with no box to go by, three squares the frame's height
+    across it. The whole frame in one would shrink a face by twelve to fit
+    BlazeFace's 192 pixels, which loses everything past arm's length; a square
+    of the frame's height shrinks it by seven, and on porch-2 squares of 1000
+    to 1296 pixels found a face a metre away in 92 frames of 93."""
+    if box is not None:
+        return [head_area(box, width, height)]
+    side = min(width, height)
+    return [(x, 0, x + side, side) for x in sorted({0, (width - side) // 2, width - side})]
 
 
 def head_area(box, width, height):
@@ -601,9 +695,9 @@ def bench(options):
 
 
 def main():
-    # The window is measured from here, the nearest this process gets to the
-    # moment the PIR fired. Importing GStreamer has already happened.
-    started = time.monotonic()
+    # The window is measured from before GStreamer's import, the nearest this
+    # process gets to the moment the PIR fired or the button was pressed.
+    started = PROCESS_STARTED
 
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -635,8 +729,12 @@ def main():
                        help="percent cosine a saved face must reach to be named (default 45)")
     faces.add_argument("--face-margin", type=int, default=5,
                        help="percent the best person must beat the next by (default 5)")
-    faces.add_argument("--face-window", type=float, default=1.5,
-                       help="seconds after the person verdict to look for a face (default 1.5)")
+    faces.add_argument("--face-window", type=float, default=6.0,
+                       help="seconds after the person verdict to go on looking for a face, "
+                            "unless one is named first (default 6)")
+    faces.add_argument("--ring", action="store_true",
+                       help="a ring: look only for who, until --detect-window seconds "
+                            "after this process began")
     parser.add_argument("pipeline", nargs=argparse.REMAINDER,
                         help="the pipeline, as gst-launch-1.0 would take it, after --")
     options = parser.parse_args()

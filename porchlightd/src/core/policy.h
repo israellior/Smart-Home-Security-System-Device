@@ -38,6 +38,12 @@ struct Policy {
   // who walks up at second ten - after the cat that woke the camera - would
   // never be looked for at all.
   std::chrono::seconds no_person_cooldown{5};
+  // Faces, when they can be looked for at all. How long the recorder may go
+  // on looking for a face once it has a person - the core waits that much
+  // longer too - and how long a ring's alert may wait for a name. Both zero
+  // when faces are off, and a ring then goes out the moment it is pressed.
+  std::chrono::seconds face_search{0};
+  std::chrono::seconds ring_face_wait{0};
 
   // A day, and two hundred. The server signals a transient failure by not
   // acknowledging at all and expects the device to keep trying, so these are

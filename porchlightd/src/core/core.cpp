@@ -1,5 +1,6 @@
 #include "core/core.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace porch {
@@ -132,10 +133,20 @@ void Core::on_button(TimePoint now, std::vector<Action>& out) {
       //
       // A press is the proof the detector was looking for, so a motion alert
       // still being held back is never sent at all - the ring replaces it.
-      recording_event_->kind = Kind::Ring;
-      recording_event_->awaiting_verdict = false;
-      recording_event_->unwanted = false;
-      alerts_.push({recording_event_->id, Kind::Ring, now, {}});
+      ActiveEvent& event = *recording_event_;
+      event.kind = Kind::Ring;
+      event.unwanted = false;
+      event.alert_at = now;
+      // Still looking, with faces on: the ring waits for who as well, but no
+      // longer than a ring on its own would.
+      if (event.awaiting_verdict && policy_.ring_face_wait > std::chrono::seconds::zero()) {
+        event.verdict_due = std::min(event.verdict_due, now + policy_.ring_face_wait);
+        return;
+      }
+      event.awaiting_verdict = false;
+      // Whatever the motion already found - the usual case, since the PIR
+      // sees a visitor before the button does.
+      alerts_.push({event.id, Kind::Ring, now, event.faces});
       pump_alerts(now, out);
     }
     return;  // one recording per event, whichever way it started
@@ -178,7 +189,7 @@ void Core::on_recording_finished(const RecordingFinished& event, TimePoint now,
   // alert goes out as it always did. Whatever the id says: this is the only
   // place the held alert lives, and it is about to be cleared.
   if (recording_event_ && recording_event_->awaiting_verdict) {
-    release_motion_alert(now, out);
+    release_held_alert(now, out);
   }
 
   const std::optional<ActiveEvent> described = recording_event_;
@@ -209,15 +220,22 @@ void Core::on_recording_finished(const RecordingFinished& event, TimePoint now,
 }
 
 void Core::on_detection(const DetectionResult& event, TimePoint now, std::vector<Action>& out) {
-  // Anything but the motion still waiting on an answer is stale: the event
-  // became a ring, the deadline already sent the alert, or it is the verdict
-  // of a recording that is not the current one.
-  if (!recording_event_ || recording_event_->id != event.event_id ||
-      !recording_event_->awaiting_verdict) {
+  // The verdict of a recording that is not the current one says nothing.
+  if (!recording_event_ || recording_event_->id != event.event_id) {
     return;
   }
+  // Kept even when it is too late to act on, for a press later in the clip.
   if (event.verdict != Verdict::NoPerson) {
-    release_motion_alert(now, out, event.faces);
+    recording_event_->faces = event.faces;
+  }
+  // Nothing held: the alert has gone already, by the deadline or a press.
+  if (!recording_event_->awaiting_verdict) {
+    return;
+  }
+  // A ring is never judged. The camera can only add who, and saying nobody
+  // was there - wrongly, since somebody pressed - must not silence it.
+  if (recording_event_->kind == Kind::Ring || event.verdict != Verdict::NoPerson) {
+    release_held_alert(now, out, event.faces);
     return;
   }
 
@@ -281,6 +299,10 @@ void Core::on_shutdown(std::vector<Action>& out) {
 }
 
 void Core::trigger(Kind kind, TimePoint now, bool with_clip, std::vector<Action>& out) {
+  if (kind == Kind::Ring && with_clip && policy_.ring_face_wait > std::chrono::seconds::zero()) {
+    ring_with_a_name(now, out);
+    return;
+  }
   const EventId id = ids_.next();
   alerts_.push({id, kind, now, {}});
   // Before the recording starts, so the server hears about the trigger even if
@@ -305,16 +327,36 @@ void Core::watch_for_person(TimePoint now, std::vector<Action>& out) {
 
   ActiveEvent active{id, Kind::Motion, now};
   active.awaiting_verdict = true;
-  active.verdict_due = now + policy_.detect_window + policy_.detect_grace;
+  // The face search comes after the person, so it adds to the wait.
+  active.verdict_due =
+      now + policy_.detect_window + policy_.face_search + policy_.detect_grace;
+  active.alert_at = now;
   recording_event_ = active;
 }
 
-// Still stamped with the PIR's time, not the verdict's: the alert says when
-// the person was at the door, and it is the camera that was slow.
-void Core::release_motion_alert(TimePoint now, std::vector<Action>& out,
-                                const std::string& faces) {
-  recording_event_->awaiting_verdict = false;
-  alerts_.push({recording_event_->id, Kind::Motion, recording_event_->triggered_at, faces});
+// A ring with faces on. The chime has already played; only the alert waits,
+// and only briefly - whoever presses is standing at the camera, facing it, so
+// a name comes quickly or not at all. The recorder looks for who and never
+// for whether, so nothing it says can stop a ring being sent.
+void Core::ring_with_a_name(TimePoint now, std::vector<Action>& out) {
+  const EventId id = ids_.next();
+  out.push_back(StartRecording{id, policy_.clip, std::chrono::seconds::zero(),
+                               policy_.ring_face_wait});
+  recording_ = RecordingState::Active;
+
+  ActiveEvent active{id, Kind::Ring, now};
+  active.awaiting_verdict = true;
+  active.verdict_due = now + policy_.ring_face_wait;
+  active.alert_at = now;
+  recording_event_ = active;
+}
+
+// Still stamped with the trigger's time, not the verdict's: the alert says
+// when the person was at the door, and it is the camera that was slow.
+void Core::release_held_alert(TimePoint now, std::vector<Action>& out, const std::string& faces) {
+  ActiveEvent& held = *recording_event_;
+  held.awaiting_verdict = false;
+  alerts_.push({held.id, held.kind, held.alert_at, faces});
   pump_alerts(now, out);
 }
 
@@ -324,7 +366,7 @@ void Core::release_motion_alert(TimePoint now, std::vector<Action>& out,
 void Core::check_verdict_deadline(TimePoint now, std::vector<Action>& out) {
   if (recording_event_ && recording_event_->awaiting_verdict &&
       now >= recording_event_->verdict_due) {
-    release_motion_alert(now, out);
+    release_held_alert(now, out);
   }
 }
 

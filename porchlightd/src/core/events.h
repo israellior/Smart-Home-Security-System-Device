@@ -29,9 +29,10 @@ struct RecordingFinished {
   std::uintmax_t bytes = 0;
 };
 
-// The recorder's detector has looked at the frames of a motion recording. At
-// most one per recording, always before its RecordingFinished, and possibly
-// never - a recorder that dies says nothing, which the core reads as Unknown.
+// The recorder's detector has looked at the frames of a motion recording, or
+// for the face of whoever rang. At most one per recording, always before its
+// RecordingFinished, and possibly never - a recorder that dies says nothing,
+// which the core reads as Unknown.
 struct DetectionResult {
   EventId event_id;
   Verdict verdict = Verdict::Unknown;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <stdexcept>
@@ -142,6 +143,13 @@ struct DetectConfig {
   // Placeholders until they are measured at the door (step 5 of the plan).
   int face_match_percent{45};
   int face_margin_percent{5};
+  // How long to go on looking for a face once there is a person. Whoever
+  // walks up is side-on or still moving when the person is first seen, and on
+  // porch-2 1.5 s missed every one of them; the search stops at the first
+  // name, so a known face costs only the frames it takes.
+  std::chrono::seconds face_search{6};
+  // How long a ring's alert waits for a name. The chime does not wait.
+  std::chrono::seconds ring_wait{3};
 };
 
 struct RecorderConfig {
