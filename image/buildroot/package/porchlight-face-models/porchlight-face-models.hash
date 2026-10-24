@@ -1,0 +1,4 @@
+# Locally computed, 2026-10-18
+sha256  3698b18f063835bc609069ef052228fbe86d9c9a6dc8dcb7c7c2d69aed2b181b  face_detection_full_range.tflite
+# convert-sface.sh's output, twice, byte for byte
+sha256  a36324b28cf05b7712323744c36dd3dc911a84b17c099662ca5abdaa991a7ae3  sface_2021dec_float32.tflite

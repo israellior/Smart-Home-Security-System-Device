@@ -22,6 +22,8 @@ struct SendAlert {
   // outage still reports the time of the event. Steady, so the server link
   // converts it to wall-clock as it sends.
   TimePoint triggered_at;
+  // The detector's faces, as JSON text, or "" - see DetectionResult.
+  std::string faces;
 };
 
 struct StartRecording {
@@ -32,6 +34,9 @@ struct StartRecording {
   // no proof that somebody is there, and neither does a device with detection
   // turned off. The core waits a little longer than this for the answer.
   std::chrono::seconds detect_for{0};
+  // A ring's recording, with faces on: look only for who, for this long, and
+  // never for whether - a ring is its own proof. Zero for everything else.
+  std::chrono::seconds ring_faces{0};
 };
 
 struct StopRecording {};

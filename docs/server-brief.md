@@ -224,6 +224,83 @@ password typed in the app cannot strand it. The outcome is sent after the
 socket comes back on whichever network won. The password is never stored:
 the request file holding it is deleted as it is read.
 
+### Faces — the people a doorbell knows, both ways on the WebSocket
+
+**New 2026-10-23.** A doorbell can say who is at the door, from faces its
+owner has saved. Everything that decides *who* happens on the doorbell; the
+server keeps the list, the pictures and the names, and hands the doorbell
+what it needs to recognise them.
+
+The hello adds, from bridges that can recognise faces:
+
+```json
+"faces": { "model": "sface_2021dec_float32", "revision": 7 }
+```
+
+`revision` is the last list the doorbell applied, or `null` for none. **A
+doorbell whose saved faces were made by a different model also says `null`**:
+after an update that changes the model, its old codes compare with nothing, so
+it needs every picture again. No `faces` in the hello means the doorbell
+cannot recognise anyone, and it is never sent the list.
+
+The server sends **the whole list** - never a change to it - whenever the list
+changes and whenever a hello reports a `revision` that is not the current one:
+
+```json
+{ "type": "faces-sync", "revision": 8,
+  "people": [
+    { "id": "p_3k9x2m",
+      "photos": [ { "id": "f_81ab", "url": "https://…signed GET…" } ] }
+  ] }
+```
+
+- **A person missing from the list is forgotten**, codes and all. That is how
+  deleting someone works, and there is no other message for it. A sync that
+  was lost is repaired by the next one.
+- `revision` belongs to the doorbell and only goes up.
+- `id`s are short opaque strings, `[A-Za-z0-9_-]{1,32}`, and **never a name**.
+  The names stay on the server: a stolen doorbell holds codes and ids, nothing
+  that says whose.
+- **Photos are JPEG, one face each**, cropped with a margin around it, about
+  256×256 and at most 200 KB. The doorbell finds the face again itself, so the
+  crop does not have to be exact.
+- **URLs are signed GETs valid for at least an hour**: a doorbell busy
+  recording may get to them late.
+- At most **10 people, 20 photos each**.
+
+The bridge hands the list to `porchlight-faces.py`, which runs as
+`porchlight`, downloads each photo it has not already coded, makes its code,
+drops whatever is no longer listed, and **keeps no pictures** - only the codes,
+in `/data/faces/faces.json`. Then, once per sync:
+
+```json
+{ "type": "faces-status", "revision": 8,
+  "photos": [ { "id": "f_81ab", "ok": true },
+              { "id": "f_81ac", "ok": false, "error": "no face" } ] }
+```
+
+`error` is one of `no face`, `more than one face`, `face too small`,
+`could not download`, `not a picture`. A photo that failed is simply not used;
+the app should say why and ask for another one. A doorbell that is offline
+when the list changes gets it on its next hello.
+
+**The alert says who.** A motion alert released by a `person` verdict carries,
+when the doorbell looked at faces:
+
+```json
+"meta": { "faces": [ { "person": "p_3k9x2m", "score": 0.65 } ] }
+```
+
+`person` is an id from the list, or `null` for a face that matched nobody
+known. An empty list means it looked and found no face; no `faces` at all
+means it did not look. At most four entries. The server already stores `meta`
+with the event as given; what it adds is reading `person` to put a name in
+the notification. **A name is only ever added to an alert, never a reason to
+withhold one**: a known person still notifies, unless an owner chooses
+otherwise for that person.
+
+**Deleting a doorbell deletes its people and their photos.**
+
 ### Clip upload
 
 **Changed from the first issue of this brief.** The device's uploader was not

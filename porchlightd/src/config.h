@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <stdexcept>
@@ -132,6 +133,23 @@ struct DetectConfig {
   // Bright frames that must have been looked at before "nobody" is believed.
   // Fewer, and the answer is unknown, which alerts.
   int min_frames{8};
+
+  // Who, once it is a person: the face from the camera's full-resolution
+  // stream, matched against the saved faces. Needs the camera, and adds a
+  // second stream to the recording's pipeline only while it is on.
+  bool faces{false};
+  std::filesystem::path faces_store{"/data/faces/faces.json"};
+  // Percent cosine to name a saved person, and the lead over the next one.
+  // Placeholders until they are measured at the door (step 5 of the plan).
+  int face_match_percent{45};
+  int face_margin_percent{5};
+  // How long to go on looking for a face once there is a person. Whoever
+  // walks up is side-on or still moving when the person is first seen, and on
+  // porch-2 1.5 s missed every one of them; the search stops at the first
+  // name, so a known face costs only the frames it takes.
+  std::chrono::seconds face_search{6};
+  // How long a ring's alert waits for a name. The chime does not wait.
+  std::chrono::seconds ring_wait{3};
 };
 
 struct RecorderConfig {

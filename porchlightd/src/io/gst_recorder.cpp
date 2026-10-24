@@ -179,7 +179,8 @@ void add_detector(std::vector<std::string>& args, const DetectConfig& detect) {
   args.push_back(std::format("max-rate={}", detect.fps));
   args.push_back("!");
   // Scaled and converted here, in C, rather than in Python. Squashed rather
-  // than letterboxed: a person a metre from the door survives it.
+  // than letterboxed: on porch-2, 2026-10-18, letterboxing and two square
+  // tiles scored a person within 0.02 of it, and they cost more.
   args.push_back("videoscale");
   args.push_back("!");
   args.push_back("videoconvert");
@@ -195,12 +196,77 @@ void add_detector(std::vector<std::string>& args, const DetectConfig& detect) {
   args.push_back("sync=false");
 }
 
+// The camera's second stream, at the sensor mode's own 2304x1296, for faces:
+// a face a metre from the door is about 155 pixels wide here and about 45 in
+// the recording, which is too few to tell anyone apart. Nothing reads it
+// until the detector has found a person, and then only a frame or three.
+//
+// Its own queue first, and that is not tidiness: libcamerasrc pushes both
+// streams from one thread, and a branch without a queue holds the pipeline in
+// PAUSED - no frame on either pad, no error either.
+//
+// And a fakesink, not an appsink. An appsink will not pass EOS while it holds
+// a frame nobody has pulled - and this one is pulled only after a person - so
+// on porch-2 every recording with it hung at the stop until the daemon killed
+// it, and every clip was lost. A fakesink never holds up EOS, and its
+// last-sample is the newest frame, read when it is wanted.
+void add_details(std::vector<std::string>& args) {
+  args.push_back(std::format("{}.src_0", kCameraName));
+  args.push_back("!");
+  args.push_back("video/x-raw,format=I420,width=2304,height=1296");
+  args.push_back("!");
+  args.push_back("queue");
+  args.push_back("leaky=downstream");
+  args.push_back("max-size-buffers=1");
+  args.push_back("max-size-bytes=0");
+  args.push_back("max-size-time=0");
+  args.push_back("!");
+  args.push_back("fakesink");
+  args.push_back("name=detail");
+  args.push_back("sync=false");
+  args.push_back("enable-last-sample=true");
+}
+
 }  // namespace
+
+// Rebuilt rather than passed through: the line comes from a script, and what
+// goes on to the server is only ever a few known fields. The server keeps
+// `meta` as given up to 2 KB and drops the lot beyond that, so four faces is
+// a ceiling well inside it, and a doorbell has never had five at once.
+std::string faces_of(const nlohmann::json& message) {
+  const auto it = message.find("faces");
+  if (it == message.end() || !it->is_array()) {
+    return {};
+  }
+  nlohmann::json clean = nlohmann::json::array();
+  for (const auto& face : *it) {
+    if (!face.is_object() || clean.size() >= 4) {
+      continue;
+    }
+    const auto person = face.find("person");
+    const auto score = face.find("score");
+    nlohmann::json entry = nlohmann::json::object();
+    entry["person"] = (person != face.end() && person->is_string() && person->size() <= 64)
+                          ? *person
+                          : nlohmann::json(nullptr);
+    entry["score"] = (score != face.end() && score->is_number()) ? score->get<double>() : 0.0;
+    clean.push_back(entry);
+  }
+  return clean.dump();
+}
 
 std::vector<std::string> build_pipeline(const RecorderConfig& config,
                                         const std::filesystem::path& output,
-                                        std::chrono::seconds detect_for) {
-  const bool detect = detect_for > std::chrono::seconds::zero();
+                                        std::chrono::seconds detect_for,
+                                        std::chrono::seconds ring_faces) {
+  const bool can_see_faces = config.detect.faces && config.video_source == "libcamera";
+  // A ring looks for who and never for whether, so it is only worth the
+  // camera's second stream when there is a face to be found in it.
+  const bool ring = ring_faces > std::chrono::seconds::zero() && can_see_faces;
+  // The person model runs for a ring too: its box says where the head is.
+  const bool detect = detect_for > std::chrono::seconds::zero() || ring;
+  // Faces need a person first, and the camera's second stream to find them in.
+  const bool faces = detect && can_see_faces;
 
   // record-clip.py is gst-launch-1.0 -e with one addition: it turns SIGINT into
   // EOS, which flushes the muxer and leaves a file that will play, and it can
@@ -231,10 +297,22 @@ std::vector<std::string> build_pipeline(const RecorderConfig& config,
     args.insert(args.end(), {
         "--detect-model", d.model.string(),
         "--detect-size", std::to_string(d.input_size),
-        "--detect-window", std::to_string(detect_for.count()),
+        "--detect-window", std::to_string((ring ? ring_faces : detect_for).count()),
         "--detect-min-score", std::to_string(d.min_score_percent),
         "--detect-min-luma", std::to_string(d.min_luma),
         "--detect-min-frames", std::to_string(d.min_frames),
+    });
+    if (ring) {
+      args.push_back("--ring");
+    }
+  }
+  if (faces) {
+    const DetectConfig& d = config.detect;
+    args.insert(args.end(), {
+        "--faces-store", d.faces_store.string(),
+        "--face-match", std::to_string(d.face_match_percent),
+        "--face-margin", std::to_string(d.face_margin_percent),
+        "--face-window", std::to_string(d.face_search.count()),
     });
   }
   args.push_back("--");
@@ -252,6 +330,9 @@ std::vector<std::string> build_pipeline(const RecorderConfig& config,
   add_audio(args, config);
   if (detect) {
     add_detector(args, config.detect);
+  }
+  if (faces) {
+    add_details(args);
   }
   return args;
 }
@@ -282,6 +363,15 @@ GstRecorder::GstRecorder(Reactor& reactor, EventSink sink, RecorderConfig config
           "detection is on but there is no interpreter at {} - motion recordings will fail "
           "to start, and alert unjudged",
           config_.detect.python.string());
+    }
+    // Also not fatal, and the ordinary state of a doorbell nobody has saved a
+    // face on: a person alerts as a person, with no name.
+    if (config_.detect.faces && !std::filesystem::exists(config_.detect.faces_store, ec)) {
+      log(Level::Info, "rec", "faces are on but none are saved yet ({})",
+          config_.detect.faces_store.string());
+    }
+    if (config_.detect.faces && config_.video_source != "libcamera") {
+      log(Level::Warn, "rec", "faces are on but the video is not the camera - not looked for");
     }
   }
 
@@ -315,7 +405,7 @@ GstRecorder::~GstRecorder() {
 }
 
 void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds,
-                        std::chrono::seconds detect_for) {
+                        std::chrono::seconds detect_for, std::chrono::seconds ring_faces) {
   if (phase_ != Phase::Idle) {
     // The core never does this. If it ever did, the answer must still be
     // exactly one RecordingFinished per start, or it would wait forever.
@@ -339,9 +429,14 @@ void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds,
   verdict_sent_ = false;
   detector_input_.clear();
 
-  const std::vector<std::string> args = build_pipeline(config_, output_, detect_for);
+  const std::vector<std::string> args = build_pipeline(config_, output_, detect_for, ring_faces);
+  // Piped whenever the core is holding an alert for the answer. A ring that
+  // build_pipeline decided not to look for simply never answers, and the
+  // core's own deadline sends it.
+  const bool answers = detect_for > std::chrono::seconds::zero() ||
+                       ring_faces > std::chrono::seconds::zero();
   pid_t pid = -1;
-  if (detect_for > std::chrono::seconds::zero()) {
+  if (answers) {
     PipedChild child = spawn_child_with_pipes(args);
     pid = child.pid;
     if (pid >= 0) {
@@ -382,6 +477,9 @@ void GstRecorder::start(const EventId& event_id, std::chrono::seconds seconds,
   if (detect_for > std::chrono::seconds::zero()) {
     log(Level::Info, "rec", "recording id={} for {}s to {}, looking for a person for {}s",
         event_id, seconds.count(), output_.string(), detect_for.count());
+  } else if (ring_faces > std::chrono::seconds::zero()) {
+    log(Level::Info, "rec", "recording id={} for {}s to {}, a ring: looking for who for {}s",
+        event_id, seconds.count(), output_.string(), ring_faces.count());
   } else {
     log(Level::Info, "rec", "recording id={} for {}s to {}", event_id, seconds.count(),
         output_.string());
@@ -504,9 +602,11 @@ void GstRecorder::handle_detector_line(const std::string& line) {
     return;
   }
   verdict_sent_ = true;
-  log(Level::Info, "rec", "detector: {} for {} ({})", to_string(verdict), event_id_,
-      message.value("why", std::string{"no reason given"}));
-  sink_(DetectionResult{event_id_, verdict});
+  const std::string faces = faces_of(message);
+  log(Level::Info, "rec", "detector: {} for {} ({}){}", to_string(verdict), event_id_,
+      message.value("why", std::string{"no reason given"}),
+      faces.empty() ? std::string{} : std::format("; faces {}", faces));
+  sink_(DetectionResult{event_id_, verdict, faces});
 }
 
 void GstRecorder::report(bool clean_exit) {

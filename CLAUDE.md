@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Working notes for this project. Read this first; update it at the end of any session
-that changes something here. Last updated 2026-10-18.
+that changes something here. Last updated 2026-10-23.
 
 **Also read [DESIGN.md](DESIGN.md)** and
 [docs/server-brief.md](docs/server-brief.md). This file describes the present.
@@ -76,6 +76,9 @@ the viewer is the app rather than a page served from here.
 | — | A smaller image | **runs on the Pi 2026-10-15** (release-10, a clean build, as a bundle): 296 → 228 MiB, bundle 120 → 89 MB. Kernel cut by `localmodconfig` to `kernel-modules.txt` (1904 modules → 72), checked at every build; `voaacenc` instead of FFmpeg, with a fallback for configs on `/data` that still say `avenc_aac`; no udev hwdb. Built-in drivers, and so the 23 MiB `Image`, not yet cut |
 | — | The Wi-Fi signal, reported to the app | **written 2026-10-15, never run on the Pi.** `server-bridge.py` reads `/proc/net/wireless` every 30 s and sends `{"type":"link","rssi":…}` on a 3 dB change; the app shows bars on the device page and "Weak Wi-Fi" over the call. Only the parser was checked, against sample files. See `docs/server-brief.md` |
 | — | Person detection gates the motion alert | **runs on the Pi 2026-10-18** (release-19, a clean build, installed by hand as a bundle): LiteRT and the model in the image, `detect.enabled` set on porch-2 only. Real visitors alert in ~1.4 s at 0.50–0.68; motion with nobody in view deletes its clip and sends nothing. Scores sit close to the 0.50 line — see "Person detection" |
+| — | Faces recognised in the recorder, steps 3–4 of the face plan | **runs on the Pi 2026-10-19** (release-21, `detect.faces` on porch-2 only): after a person, the head end of the person's box is cut from the camera's 2304×1296 second stream, the face found (BlazeFace), coded (SFace, our TFLite conversion) and matched against `/data/faces/faces.json`. The owner, saved by hand as `p_0001` from four capture frames, was named at 0.65 with a 203 px face, person + face 1.85 s after the PIR; the alert carried `meta.faces`, which the server already stores. Release-20 had the face stream in an appsink and **every clip with faces on hung at its stop and was lost** — an appsink will not pass EOS holding an unpulled frame; release-21 uses a fakesink's `last-sample`, and clips finish `ok=true`. Bundle 100 → 137 MB (SFace float32). **Never tried against a second person**; thresholds are placeholders until step 5 |
+| — | Faces from the server, step 6 of the face plan | **runs on the Pi 2026-10-23** (release-22, a clean build, as a bundle): the hello carries `faces: {model, revision}`, the server answers with the whole list as `faces-sync`, the bridge runs `porchlight-faces.py sync`, and `faces-status` goes back per photo. Six selfie crops uploaded with the app server's `scripts/add-face.mjs` were fetched and coded 7 s after porch-2 reconnected, 5 of 6 usable, and replaced the hand-made `p_0001`. Pillow is in the image for the JPEGs. Contract in `docs/server-brief.md` |
+| — | A longer look for a face, and rings by name | **runs on the Pi 2026-10-23** (release-23, installed by hand): after the person, faces are looked for until `detect.face_seconds` (6) - stopping at the first name or the fourth unknown face - with the person's box found again before every frame; the core's wait grows by the same. A ring with faces on holds its alert up to `detect.ring_wait_seconds` (3) for a name, from a recording that looks only for who (`record-clip.py --ring`); a ring during a motion that already named someone carries that name at once. Measured: motion named at 0.70–0.73, 2.6 s after the PIR, once only on the fifth frame 2.9 s into the search (the old 1.5 s would have missed it); a ring from cold named at 0.62, 2.96 s after the press - **36 ms inside the 3 s**, so 4 s is probably the right wait. The app's Face ID-style scan, step 7, is in the app repo |
 
 ### Read this first: what has run on hardware, and what has not
 
@@ -996,6 +999,18 @@ opened fresh for every clip are all candidates.
 the journal. It makes timing anything from the log misleading.
 `PYTHONUNBUFFERED=1` in the unit, or `-u` on the interpreter, would fix it.
 
+**11. A clip being uploaded is asked for again after the link drops.** Seen
+2026-10-23 on weak Wi-Fi: `ServerOffline` marks the upload in flight as
+failed and schedules a retry, but the uploader's child is still sending, so
+`ScriptUploader` refuses each retry - "asked for X while X is still going" -
+and answers failed, at 4, 8, 16 s, until the first send ends. Nothing is lost
+and it clears itself; the core should wait for the child, not the link.
+
+**12. The PIR's OUT wire still works loose.** On 2026-10-23 it flooded the
+line with thousands of edges a second three times after being reseated, each
+flood starting a recording. See "The button, the PIR and the LED" for the
+pull-up/pull-down test that tells a loose wire from a working sensor.
+
 
 ## The codebase
 
@@ -1048,7 +1063,19 @@ pi/record-clip.py       The recorder, as porchlightd's child: gst-launch-1.0 -e
                         EOS, and the exit code is the verdict. With
                         --detect-model it is also the person detector: a thread
                         fed from the pipeline's appsink, one JSON verdict on
-                        stdout, any failure in it reported as "unknown".
+                        stdout, any failure in it reported as "unknown". With
+                        --faces-store, who - for --face-window seconds after
+                        the person; with --ring, only who, for a ring.
+pi/porchlight-faces.py  Faces: BlazeFace finds them, a similarity transform
+                        straightens each to 112x112, SFace turns it into a
+                        128-number code, and the store (ids and codes, no
+                        names, no pictures) says who. numpy and LiteRT only.
+                        record-clip.py loads it with --faces-store; by hand,
+                        find / compare / enroll / match / bench on PPM files.
+                        Its SFace is our ONNX-to-TFLite conversion, made by
+                        image/buildroot/package/porchlight-face-models/
+                        convert-sface.sh and published as the GitHub release
+                        face-models-1, which the image downloads by hash.
 pi/porchlight-firstboot.py
                         One image becomes one doorbell. Reads the birth
                         certificate off the FAT boot partition, installs the

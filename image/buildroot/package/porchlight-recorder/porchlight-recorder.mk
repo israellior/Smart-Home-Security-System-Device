@@ -16,6 +16,8 @@ define PORCHLIGHT_RECORDER_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/local/lib/porchlight/record-clip.py
 	$(INSTALL) -D -m 0755 $(@D)/upload-clip.py \
 		$(TARGET_DIR)/usr/local/lib/porchlight/upload-clip.py
+	$(INSTALL) -D -m 0755 $(@D)/porchlight-faces.py \
+		$(TARGET_DIR)/usr/local/lib/porchlight/porchlight-faces.py
 endef
 
 $(eval $(generic-package))

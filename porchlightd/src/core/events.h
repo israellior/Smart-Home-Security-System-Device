@@ -29,12 +29,17 @@ struct RecordingFinished {
   std::uintmax_t bytes = 0;
 };
 
-// The recorder's detector has looked at the frames of a motion recording. At
-// most one per recording, always before its RecordingFinished, and possibly
-// never - a recorder that dies says nothing, which the core reads as Unknown.
+// The recorder's detector has looked at the frames of a motion recording, or
+// for the face of whoever rang. At most one per recording, always before its
+// RecordingFinished, and possibly never - a recorder that dies says nothing,
+// which the core reads as Unknown.
 struct DetectionResult {
   EventId event_id;
   Verdict verdict = Verdict::Unknown;
+  // Who, as JSON text the recorder has already cut down to known fields: ""
+  // when faces were not looked at. The core carries it to the alert and never
+  // reads it - a name can be added to an alert, but never decide one.
+  std::string faces;
 };
 
 struct UploadFinished {

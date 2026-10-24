@@ -21,7 +21,7 @@ Policy detecting_policy() {
   return policy;
 }
 
-DetectionResult verdict(Verdict v, EventId id = "evt-1") { return DetectionResult{id, v}; }
+DetectionResult verdict(Verdict v, EventId id = "evt-1") { return DetectionResult{id, v, {}}; }
 
 TEST(Detection, MotionRecordsAndLooksButHoldsTheAlert) {
   Harness h(detecting_policy());
@@ -52,6 +52,34 @@ TEST(Detection, APersonReleasesTheAlertStampedWithThePirsTime) {
   EXPECT_EQ(alert->triggered_at, fired);
   // A person is what the clip is for: it records to its full length.
   EXPECT_EQ(count<StopRecording>(out), 0);
+}
+
+// Who it was rides on the alert untouched; the core never reads it.
+TEST(Detection, APersonsFacesTravelWithTheAlert) {
+  Harness h(detecting_policy());
+  h.go_online();
+  h.send(MotionDetected{});
+
+  const std::string faces = R"([{"person":"p_lior","score":0.71}])";
+  const auto out = h.after(2s, DetectionResult{"evt-1", Verdict::Person, faces});
+
+  const SendAlert* alert = find<SendAlert>(out);
+  ASSERT_NE(alert, nullptr);
+  EXPECT_EQ(alert->faces, faces);
+}
+
+// A name can be added to an alert but can never decide one: an alert released
+// by the deadline, or a ring, simply has none.
+TEST(Detection, AnAlertWithoutAVerdictCarriesNoFaces) {
+  Harness h(detecting_policy());
+  h.go_online();
+  h.send(MotionDetected{});
+
+  const auto out = h.after(11s);
+
+  const SendAlert* alert = find<SendAlert>(out);
+  ASSERT_NE(alert, nullptr);
+  EXPECT_EQ(alert->faces, "");
 }
 
 TEST(Detection, APersonsClipIsUploaded) {
@@ -255,7 +283,8 @@ TEST(Detection, ARingRecordingDoesNotLook) {
 
   ASSERT_NE(find<StartRecording>(out), nullptr);
   EXPECT_EQ(find<StartRecording>(out)->detect_for, 0s);
-  ASSERT_NE(find<SendAlert>(out), nullptr);  // and the ring never waits
+  EXPECT_EQ(find<StartRecording>(out)->ring_faces, 0s);
+  ASSERT_NE(find<SendAlert>(out), nullptr);  // with faces off, the ring never waits
 }
 
 TEST(Detection, AVerdictForAnotherRecordingIsIgnored) {
@@ -279,6 +308,165 @@ TEST(Detection, OffMeansMotionAlertsAtOnce) {
   ASSERT_NE(find<SendAlert>(out), nullptr);
   ASSERT_NE(find<StartRecording>(out), nullptr);
   EXPECT_EQ(find<StartRecording>(out)->detect_for, 0s);
+}
+
+// Faces on: six seconds to find a face once there is a person, and three for
+// a ring to wait for a name.
+Policy faces_policy() {
+  Policy policy = detecting_policy();
+  policy.face_search = 6s;
+  policy.ring_face_wait = 3s;
+  return policy;
+}
+
+const std::string kLior = R"([{"person":"p_lior","score":0.71}])";
+
+TEST(Faces, TheFaceSearchAddsToTheCoresWait) {
+  Harness h(faces_policy());
+  h.go_online();
+  const TimePoint fired = h.now();
+  h.send(MotionDetected{});
+
+  EXPECT_EQ(h.core().next_deadline(), fired + 8s + 6s + 3s);
+  EXPECT_EQ(count<SendAlert>(h.after(16s)), 0);
+  EXPECT_EQ(count<SendAlert>(h.after(1s)), 1);
+}
+
+TEST(Faces, ARingWaitsBrieflyForAName) {
+  Harness h(faces_policy());
+  h.go_online();
+  const TimePoint pressed = h.now();
+
+  const auto out = h.send(ButtonPressed{});
+
+  // The chime does not wait for anything; only the alert does.
+  EXPECT_EQ(count<PlayChime>(out), 1);
+  EXPECT_EQ(count<SendAlert>(out), 0);
+  const StartRecording* recording = find<StartRecording>(out);
+  ASSERT_NE(recording, nullptr);
+  EXPECT_EQ(recording->detect_for, 0s);  // never whether: a ring is its own proof
+  EXPECT_EQ(recording->ring_faces, 3s);
+
+  const auto named = h.after(2s, DetectionResult{"evt-1", Verdict::Person, kLior});
+  const SendAlert* ring = find<SendAlert>(named);
+  ASSERT_NE(ring, nullptr);
+  EXPECT_EQ(ring->kind, Kind::Ring);
+  EXPECT_EQ(ring->faces, kLior);
+  EXPECT_EQ(ring->triggered_at, pressed);
+}
+
+TEST(Faces, ARingWithNoNameGoesOutAtItsDeadline) {
+  Harness h(faces_policy());
+  h.go_online();
+  const TimePoint pressed = h.now();
+  h.send(ButtonPressed{});
+
+  EXPECT_EQ(count<SendAlert>(h.after(2s)), 0);
+  const auto out = h.after(1s);
+
+  const SendAlert* ring = find<SendAlert>(out);
+  ASSERT_NE(ring, nullptr);
+  EXPECT_EQ(ring->kind, Kind::Ring);
+  EXPECT_EQ(ring->faces, "");
+  EXPECT_EQ(ring->triggered_at, pressed);
+  // A name arriving after that is too late, and is not a second ring.
+  EXPECT_EQ(count<SendAlert>(h.after(1s, DetectionResult{"evt-1", Verdict::Person, kLior})), 0);
+}
+
+// The recorder never says nobody for a ring, but if it ever did, somebody
+// pressed the button: the camera can add who, and can take nothing away.
+TEST(Faces, ARingIsNeverSilencedByTheCamera) {
+  Harness h(faces_policy());
+  h.go_online();
+  h.send(ButtonPressed{});
+
+  const auto out = h.after(1s, verdict(Verdict::NoPerson));
+
+  ASSERT_NE(find<SendAlert>(out), nullptr);
+  EXPECT_EQ(find<SendAlert>(out)->kind, Kind::Ring);
+  EXPECT_EQ(count<StopRecording>(out), 0);
+  const auto clip = h.after(9s, good_clip("evt-1"));
+  ASSERT_NE(find<UploadClip>(clip), nullptr);
+  EXPECT_EQ(find<UploadClip>(clip)->kind, Kind::Ring);
+}
+
+TEST(Faces, ARingWhoseRecorderDiesStillGoesOut) {
+  Harness h(faces_policy());
+  h.go_online();
+  h.send(ButtonPressed{});
+
+  const auto out = h.after(1s, failed_clip("evt-1"));
+
+  ASSERT_NE(find<SendAlert>(out), nullptr);
+  EXPECT_EQ(find<SendAlert>(out)->kind, Kind::Ring);
+}
+
+// The camera belongs to the call, so there is nothing to look with.
+TEST(Faces, ARingDuringACallGoesOutAtOnce) {
+  Harness h(faces_policy());
+  h.go_online();
+  h.send(ViewerRequested{"viewer-1"});
+
+  const auto out = h.send(ButtonPressed{});
+
+  ASSERT_NE(find<SendAlert>(out), nullptr);
+  EXPECT_EQ(count<StartRecording>(out), 0);
+}
+
+// The usual order at a real door: the PIR sees the visitor walk up, the camera
+// names them, and then they press.
+TEST(Faces, APressAfterTheMotionNamedSomeoneRingsWithTheirNameAtOnce) {
+  Harness h(faces_policy());
+  h.go_online();
+  h.send(MotionDetected{});
+  h.after(2s, DetectionResult{"evt-1", Verdict::Person, kLior});
+  // Alerts go one at a time: the motion's has to land before the ring's goes.
+  h.send(AlertResult{"evt-1", Kind::Motion, AlertOutcome::Delivered});
+
+  const auto out = h.after(3s, ButtonPressed{});
+
+  const SendAlert* ring = find<SendAlert>(out);
+  ASSERT_NE(ring, nullptr);
+  EXPECT_EQ(ring->kind, Kind::Ring);
+  EXPECT_EQ(ring->event_id, "evt-1");
+  EXPECT_EQ(ring->faces, kLior);
+  EXPECT_EQ(count<StartRecording>(out), 0);  // the camera is already recording them
+}
+
+TEST(Faces, APressWhileStillLookingWaitsForTheNameAndReplacesTheMotion) {
+  Harness h(faces_policy());
+  h.go_online();
+  h.send(MotionDetected{});
+  const TimePoint pressed = h.now() + 1s;
+
+  const auto press = h.after(1s, ButtonPressed{});
+  EXPECT_EQ(count<PlayChime>(press), 1);
+  EXPECT_EQ(count<SendAlert>(press), 0);
+
+  const auto named = h.after(1s, DetectionResult{"evt-1", Verdict::Person, kLior});
+  ASSERT_EQ(count<SendAlert>(named), 1);
+  const SendAlert* ring = find<SendAlert>(named);
+  EXPECT_EQ(ring->kind, Kind::Ring);
+  EXPECT_EQ(ring->faces, kLior);
+  // When the button was pressed: the ring is what the alert is about.
+  EXPECT_EQ(ring->triggered_at, pressed);
+  EXPECT_EQ(count<SendAlert>(h.after(20s)), 0);
+}
+
+// Pressed while the motion is still being judged: no longer than a ring on its
+// own would wait, however long the motion's wait had left to run.
+TEST(Faces, APressWhileStillLookingWaitsNoLongerThanARing) {
+  Harness h(faces_policy());
+  h.go_online();
+  h.send(MotionDetected{});
+  h.after(1s, ButtonPressed{});
+
+  EXPECT_EQ(count<SendAlert>(h.after(2s)), 0);
+  const auto out = h.after(1s);
+
+  ASSERT_NE(find<SendAlert>(out), nullptr);
+  EXPECT_EQ(find<SendAlert>(out)->kind, Kind::Ring);
+  EXPECT_EQ(find<SendAlert>(out)->faces, "");
 }
 
 }  // namespace

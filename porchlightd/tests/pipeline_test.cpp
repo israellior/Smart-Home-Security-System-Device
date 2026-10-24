@@ -6,6 +6,7 @@
 #include "io/gst_recorder.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <string>
@@ -199,6 +200,136 @@ TEST(Pipeline, DetectionRunsUnderTheVenvWithItsSwitchesBeforeTheSeparator) {
 TEST(Pipeline, DetectionKeepsTheRecordingsOwnQueues) {
   const auto args = build_pipeline(camera_config(), "/tmp/x.mp4", 8s);
   EXPECT_GE(std::count(args.begin(), args.end(), std::string{"queue"}), 4);
+}
+
+// Faces come from the camera's second stream at full resolution, and that
+// branch must start with a queue: libcamerasrc pushes both pads from one
+// thread, and on porch-2 a branch without one held the pipeline in PAUSED
+// with no frame on either pad and no error.
+TEST(Pipeline, FacesAddTheCamerasSecondStreamBehindItsOwnQueue) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 8s);
+  const auto pad = std::find(args.begin(), args.end(), std::string{"camera.src_0"});
+  ASSERT_NE(pad, args.end());
+  ASSERT_GE(args.end() - pad, 5);
+  EXPECT_EQ(*(pad + 2), "video/x-raw,format=I420,width=2304,height=1296");
+  EXPECT_EQ(*(pad + 4), "queue");
+  EXPECT_TRUE(has(args, "name=detail"));
+}
+
+// An appsink holding a frame nobody pulled will not pass EOS, and this branch
+// is read only after a person: in release-20 every recording with faces on
+// hung at its stop and was killed, clip and all. Only the detector's appsink,
+// which is drained continuously, may be one.
+TEST(Pipeline, TheFaceStreamCanNeverHoldUpTheStop) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 8s);
+  const auto pad = std::find(args.begin(), args.end(), std::string{"camera.src_0"});
+  ASSERT_NE(pad, args.end());
+  const std::vector<std::string> branch(pad, args.end());
+  EXPECT_FALSE(has(branch, "appsink"));
+  EXPECT_TRUE(has(branch, "fakesink"));
+  EXPECT_TRUE(has(branch, "enable-last-sample=true"));
+  EXPECT_EQ(std::count(args.begin(), args.end(), std::string{"appsink"}), 1);
+}
+
+// No person, no face: without detection the second stream would cost the
+// camera's bandwidth for nothing, and the test source has no second pad.
+TEST(Pipeline, FacesNeedDetectionAndTheCamera) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4"), "camera.src_0"));
+  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4"), "--faces-store"));
+  config.video_source = "test";
+  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4", 8s), "camera.src_0"));
+  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4", 8s), "--faces-store"));
+}
+
+TEST(Pipeline, FacesSwitchesGoBeforeTheSeparator) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  config.detect.faces_store = "/data/x/faces.json";
+  config.detect.face_match_percent = 52;
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 8s);
+  const auto separator = std::find(args.begin(), args.end(), std::string{"--"});
+  const auto store = std::find(args.begin(), args.end(), std::string{"--faces-store"});
+  ASSERT_LT(store, separator);
+  EXPECT_EQ(*(store + 1), "/data/x/faces.json");
+  const auto match = std::find(args.begin(), args.end(), std::string{"--face-match"});
+  ASSERT_LT(match, separator);
+  EXPECT_EQ(*(match + 1), "52");
+}
+
+TEST(Pipeline, TheFaceSearchLengthIsPassedOn) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  config.detect.face_search = 7s;
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 8s);
+  const auto window = std::find(args.begin(), args.end(), std::string{"--face-window"});
+  ASSERT_NE(window, args.end());
+  EXPECT_EQ(*(window + 1), "7");
+}
+
+// A ring is never judged, only named: the person model still runs, for where
+// the head is, and the window is how long the alert is held for a name.
+TEST(Pipeline, ARingLooksOnlyForWho) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 0s, 3s);
+  const auto separator = std::find(args.begin(), args.end(), std::string{"--"});
+  const auto ring = std::find(args.begin(), args.end(), std::string{"--ring"});
+  ASSERT_LT(ring, separator);
+  const auto window = std::find(args.begin(), args.end(), std::string{"--detect-window"});
+  ASSERT_LT(window, separator);
+  EXPECT_EQ(*(window + 1), "3");
+  EXPECT_TRUE(has(args, "--faces-store"));
+  EXPECT_TRUE(has(args, "name=detect"));
+  EXPECT_TRUE(has(args, "camera.src_0"));
+}
+
+// With no face to be found there is nothing for a ring to wait on: it
+// records exactly as it always did.
+TEST(Pipeline, ARingWithoutFacesIsAPlainRecording) {
+  RecorderConfig config = camera_config();
+  const auto args = build_pipeline(config, "/tmp/x.mp4", 0s, 3s);
+  EXPECT_FALSE(has(args, "--ring"));
+  EXPECT_FALSE(contains(args, "--detect"));
+  EXPECT_FALSE(has(args, "camera.src_0"));
+  config.detect.faces = true;
+  config.video_source = "test";
+  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4", 0s, 3s), "--ring"));
+}
+
+// A motion recording is judged, never a ring's.
+TEST(Pipeline, AMotionRecordingIsNeverARing) {
+  RecorderConfig config = camera_config();
+  config.detect.faces = true;
+  EXPECT_FALSE(has(build_pipeline(config, "/tmp/x.mp4", 8s), "--ring"));
+}
+
+// What goes on to the server is rebuilt from known fields, never passed
+// through: the server keeps `meta` as given, and drops it whole past 2 KB or
+// on a key starting with '$'.
+TEST(Faces, OnlyPersonAndScoreReachTheAlert) {
+  const auto message = nlohmann::json::parse(R"({"verdict": "person", "faces": [
+      {"person": "p_lior", "score": 0.71, "$where": "x", "code": [1, 2, 3]},
+      {"person": 7, "score": "high"}]})");
+  EXPECT_EQ(faces_of(message),
+            R"([{"person":"p_lior","score":0.71},{"person":null,"score":0.0}])");
+}
+
+TEST(Faces, AtMostFourAndNothingWhenTheyWereNotLookedAt) {
+  nlohmann::json many = {{"faces", nlohmann::json::array()}};
+  for (int i = 0; i < 9; ++i) {
+    many["faces"].push_back({{"person", nullptr}, {"score", 0.1}});
+  }
+  EXPECT_EQ(nlohmann::json::parse(faces_of(many)).size(), 4u);
+  // Absent is "did not look"; an empty list is "looked and saw no face".
+  EXPECT_EQ(faces_of(nlohmann::json{{"verdict", "person"}}), "");
+  EXPECT_EQ(faces_of(nlohmann::json{{"faces", nlohmann::json::array()}}), "[]");
+  EXPECT_EQ(faces_of(nlohmann::json{{"faces", "p_lior"}}), "");
 }
 
 }  // namespace

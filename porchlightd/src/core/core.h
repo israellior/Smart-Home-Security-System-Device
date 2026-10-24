@@ -46,11 +46,18 @@ class Core {
     // against the requested one would only ever be a guess, since a clip
     // always comes back a little short of what was asked for.
     bool cut_short = false;
-    // A motion alert being held back until the camera says whether anybody is
-    // there. Cleared when the alert goes out or the event becomes a ring; the
-    // deadline is when the core stops waiting and sends it anyway.
+    // An alert being held back for the camera: a motion until it says whether
+    // anybody is there, a ring only until it says who. Cleared when the alert
+    // goes out; the deadline is when the core stops waiting and sends it anyway.
     bool awaiting_verdict = false;
     TimePoint verdict_due{};
+    // The time the held alert will carry. The PIR's for a motion, the press's
+    // for a ring - which, for a ring that took over a motion recording, is not
+    // triggered_at: the clip still starts where the motion did.
+    TimePoint alert_at{};
+    // Who the camera saw, from a verdict that has already been acted on. A
+    // press later in the same recording rings with the name the motion found.
+    std::string faces{};
     // The camera said nobody. The recording is being stopped and the clip is
     // thrown away when it lands - unless the button is pressed first.
     bool unwanted = false;
@@ -77,7 +84,9 @@ class Core {
 
   void trigger(Kind kind, TimePoint now, bool with_clip, std::vector<Action>& out);
   void watch_for_person(TimePoint now, std::vector<Action>& out);
-  void release_motion_alert(TimePoint now, std::vector<Action>& out);
+  void ring_with_a_name(TimePoint now, std::vector<Action>& out);
+  void release_held_alert(TimePoint now, std::vector<Action>& out,
+                          const std::string& faces = {});
   void check_verdict_deadline(TimePoint now, std::vector<Action>& out);
   void start_call(const PeerId& peer, std::vector<Action>& out);
   void lapse(TimePoint now);
